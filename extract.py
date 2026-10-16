@@ -8,6 +8,8 @@ import re
 import time
 from pathlib import Path
 
+import httpx
+
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
@@ -115,7 +117,13 @@ INTERNAL FIELDS (used later to answer questions; same no-recalculation and no-PI
 
 
 def _client(api_key: str) -> genai.Client:
-    return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_S * 1000))
+    client_args = {}
+    if load_settings().force_ipv4:
+        # Bind direct connections to IPv4 on networks with a broken IPv6 TLS path.
+        # HTTPTransport retains certificate/hostname verification and environment CA trust.
+        client_args["transport"] = httpx.HTTPTransport(local_address="0.0.0.0", retries=0)
+    return genai.Client(api_key=api_key, http_options=types.HttpOptions(
+        timeout=REQUEST_TIMEOUT_S * 1000, client_args=client_args))
 
 
 def _is_transient(e: Exception) -> bool:

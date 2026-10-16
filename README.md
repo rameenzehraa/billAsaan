@@ -40,6 +40,12 @@ cp .env.example .env   # then put your key in .env
 
 The older names `MODEL_ID` (for `MODEL_NAME`) and `GEMINI_API_KEY` (for `API_KEY`) are also accepted as fallbacks.
 
+## Network troubleshooting
+
+If diagnostics show a connection/TLS failure, first compare credential-free HTTPS access from Python and Windows curl to `https://generativelanguage.googleapis.com/v1beta/models`. An HTTP 403 without a key proves TLS/HTTP connectivity, not account access or extraction success. Never disable certificate verification.
+
+On networks where Python's default IPv6 TLS connections fail while forced IPv4 succeeds, set `GENAI_IPV4_ONLY=1` in local `.env` and fully restart Streamlit. This opt-in transport binds direct SDK connections to IPv4 while retaining certificate/hostname verification, timeouts and the configured provider/model. The default is `0`; revert it after the network's IPv6 path is repaired. No global network configuration is changed. The CLI uses the same transport setting; its arguments, cache and CSV behavior stay unchanged.
+
 ## Run
 
 **Batch, which generates both CSVs:**

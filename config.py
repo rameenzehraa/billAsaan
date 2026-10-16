@@ -54,6 +54,7 @@ class Settings:
     model_provider: str
     model_name: str
     api_key: str = field(repr=False)
+    force_ipv4: bool = False
 
 
 def load_settings() -> Settings:
@@ -67,4 +68,8 @@ def load_settings() -> Settings:
     if provider != expected:
         raise ValueError(f"MODEL_PROVIDER '{provider}' does not match MODEL_NAME '{name}' (expected '{expected}')")
     api_key = (os.getenv("API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
-    return Settings(model_provider=provider, model_name=name, api_key=api_key)
+    ipv4 = os.getenv("GENAI_IPV4_ONLY", "0").strip().lower()
+    if ipv4 not in {"0", "1", "false", "true"}:
+        raise ValueError("GENAI_IPV4_ONLY must be 0/1 or false/true")
+    return Settings(model_provider=provider, model_name=name, api_key=api_key,
+                    force_ipv4=ipv4 in {"1", "true"})
