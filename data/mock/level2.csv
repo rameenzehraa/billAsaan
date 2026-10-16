@@ -1,0 +1,11 @@
+bill_id,question_id,question,answer
+IESCO_0004,Q1,How much of my bill is taxes?,
+IESCO_0004,Q2,How many months in my history went above 200 units?,
+KESC_0004,Q1,How much of my bill is taxes?,
+KESC_0004,Q2,How many months in my history went above 200 units?,
+KESC_0008,Q1,How much of my bill is taxes?,
+KESC_0008,Q2,How many months in my history went above 200 units?,
+LESCO_0005,Q1,How much of my bill is taxes?,
+LESCO_0005,Q2,How many months in my history went above 200 units?,
+LESCO_0006,Q1,How much of my bill is taxes?,
+LESCO_0006,Q2,How many months in my history went above 200 units?,

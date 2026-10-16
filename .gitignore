@@ -1,0 +1,72 @@
+# Python environments and caches
+venv/
+.venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime output, logs and user uploads
+.cache/
+.cache*/
+output*/
+logs/
+*.log
+uploads/
+user_uploads/
+.streamlit/uploads/
+
+# Secrets (the example is a reviewed placeholder only)
+.env*
+!.env.example
+.streamlit/secrets.toml
+.aws/
+.ssh/
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+
+# Data is private by default; publish only reviewed template/docs files.
+/data/*
+!/data/mock/
+/data/mock/*
+!/data/mock/level1.csv
+!/data/mock/level2.csv
+!/data/mock_dev/
+/data/mock_dev/*
+!/data/mock_dev/level1.csv
+!/data/mock_dev/level2.csv
+!/data/public_samples/
+/data/public_samples/*
+!/data/public_samples/README.md
+!/data/public_samples/manifest.json
+
+# Unreviewed recordings, competition bundle and organizer document
+/demo/
+/*.zip
+/WTQ_Build_Track_Participant_Guide.pdf
+
+# Private prep notes and coding-agent instructions
+_prep/
+.claude/
+.agents/
+.codex/
+CLAUDE.md
+AGENTS.md
+skills-lock.json
+progress.md
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
