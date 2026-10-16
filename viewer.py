@@ -9,6 +9,7 @@ from PIL import Image, ImageOps
 from calc import compute_facts
 from checks import run_checks
 from schema import ExtractionResult
+from failures import ProcessingFailure, safe_failure
 
 MAX_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 20_000_000
@@ -75,7 +76,7 @@ def select_bill(state, identity):
             if key.startswith("review_") or key.startswith("chat_"):
                 del state[key]
         state.update(bill_identity=identity, original=None, corrected=None, checks=[], facts={},
-                     messages=[], busy=False, process_error=None, revision=0)
+                     messages=[], busy=False, process_error=None, process_diagnostic=None, revision=0)
 
 
 def apply_result(state, result, *, original=False):
@@ -90,7 +91,21 @@ def apply_result(state, result, *, original=False):
 def process_image(data: bytes, mime: str) -> ExtractionResult:
     # Import lazily: selection, preview and corrections never initialize a provider.
     from extract import extract_bill
-    result, meta = extract_bill("upload", None, "unused", image=(data, mime, None, None), private=True)
+    from config import load_settings
+    try:
+        settings = load_settings()
+        if not settings.api_key:
+            raise ValueError("API key not configured")
+    except Exception as error:
+        raise ProcessingFailure(safe_failure(error, "configuration")) from None
+    try:
+        result, meta = extract_bill("upload", None, "unused", image=(data, mime, None, None), private=True)
+    except Exception as error:
+        raise ProcessingFailure(safe_failure(error, "api")) from None
     if meta["error"]:
-        raise ValueError("We could not read this bill. Please try again with a clearer image.")
-    return ExtractionResult.model_validate(result.model_dump(mode="json"))
+        diagnostic = meta.get("failure") or safe_failure(RuntimeError(), "processing")
+        raise ProcessingFailure(diagnostic) from None
+    try:
+        return ExtractionResult.model_validate(result.model_dump(mode="json"))
+    except Exception as error:
+        raise ProcessingFailure(safe_failure(error, "validation")) from None

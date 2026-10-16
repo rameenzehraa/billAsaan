@@ -1,11 +1,13 @@
 """BillAsaan public bill explainer. Competition batch workflow remains in run.py."""
 import hashlib
 import json
+import logging
 
 import streamlit as st
 from pydantic import ValidationError
 
 from schema import ExtractionResult
+from failures import ProcessingFailure, safe_failure
 from viewer import apply_result, process_image, select_bill, validate_image, verified_samples
 
 st.set_page_config(page_title="BillAsaan", page_icon="⚡", layout="wide")
@@ -42,6 +44,7 @@ def start_processing():
     if identity and ss.original is None and not ss.busy:
         ss.busy = True
         ss.process_error = None
+        ss.process_diagnostic = None
 
 
 if data:
@@ -53,15 +56,22 @@ if ss.busy:
     try:
         with st.spinner("Reading your bill…"):
             apply_result(ss, process_image(data, mime), original=True)
-    except Exception:
-        ss.process_error = "We could not process this bill. Try again with a clearer image."
+    except Exception as error:
+        failure = error if isinstance(error, ProcessingFailure) else ProcessingFailure(safe_failure(error, "processing"))
+        ss.process_error = str(failure)
+        ss.process_diagnostic = failure.diagnostic
+        logging.getLogger("app").warning("processing_failed %s", json.dumps(failure.diagnostic))
     finally:
         ss.busy = False
     st.rerun()
 if ss.process_error:
     st.error(ss.process_error)
+    if ss.get("process_diagnostic"):
+        with st.expander("Processing diagnostics"):
+            st.json(ss.process_diagnostic)
 if ss.corrected is None:
-    st.info("Choose an image, then select Process to see its details.")
+    if not ss.process_error:
+        st.info("Choose an image, then select Process to see its details.")
 else:
     with st.expander("Review extracted details"):
         st.caption("Correct fields below using JSON. Missing values use null. Changes apply locally; "

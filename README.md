@@ -57,7 +57,7 @@ python run.py --bills <bills_dir> --templates <csv_dir> --out output/
 streamlit run app.py
 ```
 - Choose **Upload my bill** (JPG/PNG, up to 10 MB and 20 million pixels) or **Try a sample**. Previewing and switching bills make no API calls.
-- Select **Process** to invoke the existing extraction service. Successful results disable duplicate processing. Failures allow retry. No new API provider is used.
+- Select **Process** to invoke the existing extraction service. Successful results disable duplicate processing. Failures allow retry and distinguish configuration/access, quota, connection/timeout, invalid extraction and local processing errors. A Processing diagnostics expander and server log contain only exception class names, category and HTTP status (when available), never exception messages or bill contents. No new API provider is used.
 - Review **Bill summary**, **Charges and taxes**, **Usage history**, and **Checks**. Under **Review extracted details**, edit the structured fields and select **Apply corrections**. Corrections are Pydantic-validated; local checks/calculations rerun, while the original extraction is preserved separately. Corrections never change competition CSVs.
 - Results and conversation state are session-only and clear when the selected bill changes. Uploads bypass the shared disk cache and extraction debug dumps. Images are re-encoded without metadata before preview and extraction.
 - Chat suggestions and submission are disabled with an integration-pending message. API chat integration remains future work; no replies are fabricated.

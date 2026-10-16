@@ -13,7 +13,8 @@ from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
 from config import MAX_RETRIES, PROMPT_VERSION, REQUEST_TIMEOUT_S, ROOT, TEMPERATURE, load_settings
-from images import load_image
+from images import ImageLoadError, load_image
+from failures import safe_failure
 from checks import MISMATCH, count_mismatches, run_checks
 from schema import ExtractionResult, InternalFacts, empty_level1
 
@@ -253,6 +254,7 @@ def _call(client: genai.Client, model: str, contents: list, bill_id: str, meta: 
                 log.warning("bill=%s attempt=%d transient error %s; retrying in %ds", bill_id, attempt, type(e).__name__, wait)
                 time.sleep(wait)
                 continue
+            meta["failure"] = safe_failure(e, "api")
             msg = f"HTTP {e.code}: {(e.message or '')[:120]}" if isinstance(e, errors.APIError) else f"{type(e).__name__}: {str(e)[:120]}"
             return None, f"API call failed: {msg}"
         u = resp.usage_metadata
@@ -262,18 +264,21 @@ def _call(client: genai.Client, model: str, contents: list, bill_id: str, meta: 
         finish = resp.candidates[0].finish_reason if resp.candidates else None
         meta["finish_reason"] = getattr(finish, "name", str(finish)) if finish is not None else None
         if finish == types.FinishReason.MAX_TOKENS:  # truncated JSON: not retryable
+            meta["failure"] = safe_failure(ValueError(), "validation")
             return None, f"Output truncated at max_output_tokens={MAX_OUTPUT_TOKENS} (finish_reason=MAX_TOKENS)"
         return resp, None
     return None, "API call failed: retries exhausted"
 
 
-def _parse(bill_id: str, raw: str, tag: str, private: bool = False):
+def _parse(bill_id: str, raw: str, tag: str, private: bool = False, meta: dict | None = None):
     """Returns (ExtractionResult | None, error | None). Dumps raw/parsed for inspection."""
     parsed = None
     try:
         parsed = normalize(json.loads(raw))
         return ExtractionResult.model_validate(parsed), None
     except (json.JSONDecodeError, ValidationError, TypeError, AttributeError) as e:
+        if meta is not None:
+            meta["failure"] = safe_failure(e, "validation")
         return None, f"Invalid model output: {type(e).__name__}: {str(e)[:300]}"
     finally:
         if not private:
@@ -309,6 +314,7 @@ def extract_bill(bill_id: str, provider: str | None, image_path: str | Path,
         data, mime, _, _ = image or load_image(image_path)
     except Exception as e:  # noqa: BLE001
         meta["error"] = f"{type(e).__name__}: {e}"
+        meta["failure"] = safe_failure(e, "image" if isinstance(e, ImageLoadError) else "configuration")
         if not private:
             log.error("bill=%s setup failed: %s", bill_id, meta["error"])
         return fallback, meta
@@ -326,7 +332,7 @@ def extract_bill(bill_id: str, provider: str | None, image_path: str | Path,
         return _finish(bill_id, fallback, meta, start, err, private)
 
     raw = resp.text or ""
-    result, err = _parse(bill_id, raw, "", private)
+    result, err = _parse(bill_id, raw, "", private, meta)
     checks = run_checks(result.level1, result.internal) if result else []
     flagged = [c for c in checks if c["status"] == MISMATCH]
 
@@ -339,7 +345,7 @@ def extract_bill(bill_id: str, provider: str | None, image_path: str | Path,
             why = "\n".join(f"- {c['name']} ({', '.join(c['fields'])}): {c['detail']}" for c in flagged)
         reask_contents = [image_part, REASK_PROMPT.format(previous=previous, flagged=why)]
         resp2, err2 = _call(client, settings.model_name, reask_contents, bill_id, meta)
-        result2, err2 = _parse(bill_id, resp2.text or "", ".reask", private) if resp2 is not None else (None, err2)
+        result2, err2 = _parse(bill_id, resp2.text or "", ".reask", private, meta) if resp2 is not None else (None, err2)
         if result is None:  # original invalid: any valid re-ask wins
             if result2 is not None:
                 result, checks, err = result2, run_checks(result2.level1, result2.internal), None
@@ -366,6 +372,8 @@ def extract_bill(bill_id: str, provider: str | None, image_path: str | Path,
 def _finish(bill_id: str, result: ExtractionResult, meta: dict, start: float, error: str | None, private: bool = False):
     meta["latency_s"] = round(time.perf_counter() - start, 2)
     meta["error"] = error
+    if error is None:
+        meta.pop("failure", None)
     if private:
         return result, meta
     log.info(

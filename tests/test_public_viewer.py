@@ -125,7 +125,9 @@ class ViewerTests(unittest.TestCase):
         with patch("streamlit.file_uploader", return_value=Upload(image_bytes())), \
              patch("viewer.process_image", side_effect=RuntimeError("private contents")):
             app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"), default_timeout=20).run()
-            app.button[0].click().run()
+            with self.assertLogs("app", level="WARNING") as logs:
+                app.button[0].click().run()
+            self.assertNotIn("private contents", "".join(logs.output))
             self.assertFalse(app.exception)
             self.assertTrue(app.error)
             self.assertNotIn("private contents", app.error[0].value)
@@ -176,6 +178,79 @@ class ViewerTests(unittest.TestCase):
                 self.assertEqual(json.loads(row["json"])["units_consumed"], 100)
             with (output / "level2.csv").open(newline="", encoding="utf-8") as handle:
                 self.assertEqual(next(csv.DictReader(handle))["answer"], "100 units")
+
+    def test_connection_failure_is_not_reported_as_image_quality(self):
+        import httpx
+        with patch("streamlit.file_uploader", return_value=Upload(image_bytes())), \
+             patch("extract._client") as client, \
+             patch("extract.MAX_RETRIES", 0), \
+             patch("extract._dump") as dump, \
+             patch("cache.put") as cache_write:
+            client.return_value.models.generate_content.side_effect = httpx.ConnectError("private details")
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"), default_timeout=20).run()
+            app.button[0].click().run()
+            self.assertFalse(app.exception)
+            self.assertIn("connection", app.error[0].value.lower())
+            self.assertNotIn("clearer", app.error[0].value.lower())
+            self.assertFalse(any("Choose an image" in item.value for item in app.info))
+            self.assertFalse(app.session_state["busy"])
+            self.assertFalse(app.button[0].disabled)
+            self.assertIsNone(app.session_state["original"])
+            self.assertTrue(app.chat_input[0].disabled)
+            self.assertNotIn("private details", str(app.session_state["process_diagnostic"]))
+            client.return_value.models.generate_content.assert_called_once()
+            dump.assert_not_called()
+            cache_write.assert_not_called()
+
+    def test_safe_failure_categories(self):
+        import ssl
+        import httpx
+        from failures import safe_failure
+        private = "never reveal this bill or key"
+        class ProviderError(Exception):
+            def __init__(self, code):
+                super().__init__(private)
+                self.code = code
+        for code, category in [(401, "authentication"), (403, "authentication"),
+                               (429, "quota"), (400, "api"), (404, "api"), (503, "api")]:
+            with self.subTest(code=code):
+                detail = safe_failure(ProviderError(code), "api")
+                self.assertEqual(detail["category"], category)
+                self.assertEqual(detail["status"], code)
+                self.assertNotIn(private, str(detail))
+        error = httpx.ConnectError(private)
+        error.__cause__ = ssl.SSLEOFError(private)
+        detail = safe_failure(error, "api")
+        self.assertEqual(detail["category"], "network")
+        self.assertEqual(detail["cause_types"], ["ConnectError", "SSLEOFError"])
+        self.assertIsNone(detail["status"])
+        self.assertNotIn(private, str(detail))
+        self.assertEqual(safe_failure(TimeoutError(private), "api")["category"], "timeout")
+
+    def test_missing_config_fails_before_provider(self):
+        from types import SimpleNamespace
+        from failures import ProcessingFailure
+        from viewer import process_image
+        with patch("config.load_settings", return_value=SimpleNamespace(api_key="")), patch("extract._client") as client:
+            with self.assertRaises(ProcessingFailure) as caught:
+                process_image(image_bytes(), "image/png")
+            self.assertEqual(caught.exception.diagnostic["category"], "configuration")
+            client.assert_not_called()
+
+    def test_invalid_model_json_is_validation_failure(self):
+        from types import SimpleNamespace
+        from failures import ProcessingFailure
+        from viewer import process_image
+        response = SimpleNamespace(text="invalid private response", usage_metadata=None, candidates=[])
+        with patch("extract._client") as client, patch("extract._dump") as dump:
+            client.return_value.models.generate_content.return_value = response
+            with self.assertRaises(ProcessingFailure) as caught:
+                process_image(image_bytes(), "image/png")
+            self.assertEqual(caught.exception.diagnostic["category"], "validation")
+            self.assertEqual(caught.exception.diagnostic["exception_type"], "JSONDecodeError")
+            self.assertNotIn("invalid private response", str(caught.exception.diagnostic))
+            self.assertEqual(client.return_value.models.generate_content.call_count, 2)
+            dump.assert_not_called()
 
     def test_private_extraction_does_not_dump(self):
         from extract import _parse
