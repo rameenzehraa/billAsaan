@@ -50,12 +50,20 @@ service-account*.json
 !/data/public_samples/manifest.json
 
 # Unreviewed recordings, competition bundle and organizer document
-/demo/
+demo/
+demos/
+demo.*
+*.mp4
+*.mov
+*.webm
 /*.zip
 /WTQ_Build_Track_Participant_Guide.pdf
 
 # Private prep notes and coding-agent instructions
 _prep/
+competition_context.md
+project_instructions.md
+task_assigned.md
 .claude/
 .agents/
 .codex/
