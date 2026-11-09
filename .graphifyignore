@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.*
+
+# Private data: bills contain personal data and must never reach the semantic pass
+data/
+demo/
+_prep/
+output/
+output*/
+submission.zip
+WTQ_Build_Track_Participant_Guide.pdf
+*.zip
+*.mp4
+*.jpg
+*.jpeg
+*.png
+*.pdf
+
+# Caches and environments
+.cache/
+.cache*/
+__pycache__/
+venv/
+.venv/
+graphify-out/

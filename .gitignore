@@ -72,6 +72,9 @@ AGENTS.md
 skills-lock.json
 progress.md
 
+# graphify knowledge-graph output (regenerated locally)
+graphify-out/
+
 # OS / IDE
 .DS_Store
 Thumbs.db
