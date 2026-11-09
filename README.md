@@ -72,21 +72,15 @@ content or questions. Chat refuses to repeat personal identifiers.
 values separately), charge and tax line matching by type, and whether chat answers state the number `calc.py`
 computes.
 
-**Status: no held-out accuracy number yet.**
+| Subset | Bills | Field accuracy | Line items (charges · taxes) | Chat numbers |
+|---|---:|---:|---|---:|
+| **Held-out:** `KE_0826`, `KE_0926`, `KE_1026`, real KE bills never seen during development | 3 | 48/48 (100%) | 19/19 · 6/6 | 15/15 |
+| **Dev bills:** `IESCO_0004`, `LESCO_0005`, used during development | 2 | 32/32 (100%) | 2/2 · 0/0 (1 invented charge line) | 9/9 |
+| **Tuning bill:** `KESC_0008` | 1 | 16/16 (100%) | 6/6 · 3/3 | 4/4 |
 
-- So far **n = 1** hand-verified bill: `KESC_0008`. That is the bill the extraction prompt was **tuned on** during
-  the hackathon, so its scores ([eval/RESULTS.md](eval/RESULTS.md)) only show the pipeline runs end to end. They are
-  not an accuracy claim.
-- A **held-out eval is in progress:** real bills the prompt has never seen, each labelled field by field against
-  the image.
+Small sample, single held-out provider (KE); labels were model drafts hand-verified against the images.
 
-| Held-out eval | Result |
-|---|---|
-| Bills (n) | _TBD_ |
-| Level 1 field accuracy | _TBD_ |
-| Invented / missed values | _TBD_ |
-| Charge and tax lines (precision / recall) | _TBD_ |
-| Chat number accuracy | _TBD_ |
+Full per-field breakdown: [eval/RESULTS.md](eval/RESULTS.md).
 
 ## Run locally
 
