@@ -85,9 +85,12 @@ def show(value) -> str:
 
 
 def money(value) -> str:
+    """Rs 44,912 / Rs 3,777.49. Negative amounts are credits: "Rs 54,770 credit" (never a minus sign)."""
     if value is None:
         return NOT_SHOWN
-    return f"Rs {value:,.0f}" if float(value).is_integer() else f"Rs {value:,.2f}"
+    amount = abs(value)
+    text = f"Rs {amount:,.0f}" if float(amount).is_integer() else f"Rs {amount:,.2f}"
+    return f"{text} credit" if value < 0 else text
 
 
 def units(value) -> str:
@@ -150,6 +153,19 @@ def history_rows(result: ExtractionResult) -> list[dict]:
     Months that can't be dated are left out of the chart (their order would be a guess)."""
     rows = [{"Month": d, "Units": m.units} for m in result.internal.usage_history
             if m.units is not None and (d := parse_month(m.month)) is not None]
+    return sorted(rows, key=lambda r: r["Month"])
+
+
+def chart_rows(result: ExtractionResult) -> list[dict]:
+    """history_rows plus this bill's own month, flagged so the chart can highlight it. Display only.
+    Each row: Month (datetime), Label ("Aug 25"), Units, Bar ("This bill" | "Earlier")."""
+    this_month = parse_month(result.level1.bill_month)
+    rows = [dict(r) for r in history_rows(result)]
+    if this_month and result.level1.units_consumed is not None and all(r["Month"] != this_month for r in rows):
+        rows.append({"Month": this_month, "Units": result.level1.units_consumed})
+    for r in sorted(rows, key=lambda r: r["Month"]):
+        r["Label"] = r["Month"].strftime("%b %y")
+        r["Bar"] = "This bill" if this_month and r["Month"] == this_month else "Earlier"
     return sorted(rows, key=lambda r: r["Month"])
 
 

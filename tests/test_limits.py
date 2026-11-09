@@ -300,8 +300,10 @@ class ConsentTests(Base):
         process = MagicMock(return_value=fixture())
         with patch.dict(os.environ, {"FREE_TIER": "true"}):
             app = self.app(uploader, **{"viewer.process_image": process})
-            self.assertIn("Gemini free tier", app.checkbox[0].label)
-            self.assertIn("Cover your name, address and reference numbers", app.checkbox[0].label)
+            # UI milestone: notice as a short caption, consent as a plain-language checkbox.
+            self.assertTrue(any("Gemini free tier" in c.value and "improve its products" in c.value
+                                for c in app.caption))
+            self.assertIn("covered my name, address and reference numbers", app.checkbox[0].label)
             self.assertTrue(uploader.call_args.kwargs["disabled"])
             self.assertTrue(button(app, "Process").disabled)  # nothing is read before consent
             app.checkbox[0].check().run()

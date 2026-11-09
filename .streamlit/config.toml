@@ -1,10 +1,36 @@
+# BillAsaan theme: "the meter, made legible". Light and dark are both defined, so users can switch in Settings.
 [theme]
-base = "light"
-primaryColor = "#4F46E5"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F5FA"
-textColor = "#1F2937"
-font = "sans serif"
+primaryColor = "#1D6B74"
+font = "'Atkinson Hyperlegible':https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&display=swap"
+headingFontWeights = [700, 700, 700, 700, 700, 600]
+headingFontSizes = ["2.75rem", "1.45rem", "1.2rem", "1.05rem", "1rem", "0.9rem"]
+baseRadius = "10px"
+buttonRadius = "10px"
+showWidgetBorder = true
+
+[theme.light]
+primaryColor = "#1D6B74"
+backgroundColor = "#F5F7F4"
+secondaryBackgroundColor = "#E9EEE8"
+textColor = "#18242C"
+borderColor = "#D3DCD4"
+linkColor = "#1D6B74"
+chartCategoricalColors = ["#1D6B74", "#A9B7AE", "#B5541F", "#5E7A3A", "#56656D"]
+
+[theme.light.sidebar]
+backgroundColor = "#E9EEE8"
+
+[theme.dark]
+primaryColor = "#5BB8C2"
+backgroundColor = "#0E161B"
+secondaryBackgroundColor = "#16222A"
+textColor = "#E3EBE6"
+borderColor = "#2A3A36"
+linkColor = "#5BB8C2"
+chartCategoricalColors = ["#5BB8C2", "#4A5A55", "#E08A5A", "#9CC46A", "#9AABA3"]
+
+[theme.dark.sidebar]
+backgroundColor = "#101B21"
 
 [server]
 maxUploadSize = 8  # MB; the app also enforces 8 MB per file

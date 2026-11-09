@@ -230,6 +230,26 @@ class ReadingCheckTests(unittest.TestCase):
                     self.assertNotIn("None", c["reason"])
 
 
+class StyleSheetTests(unittest.TestCase):
+    """UI milestone: the injected stylesheet must survive Streamlit's HTML sanitiser."""
+
+    def test_css_body_has_no_markup(self):
+        import ui_styles
+        for theme in ("light", "dark", None):
+            for animate in (False, True):
+                with self.subTest(theme=theme, animate=animate):
+                    css = ui_styles.css(theme, animate_results=animate)
+                    self.assertTrue(css.startswith("<style>") and css.endswith("</style>"))
+                    body = css[len("<style>"):-len("</style>")]
+                    self.assertNotIn("<", body)  # DOMPurify drops the whole <style> if its text contains markup
+                    self.assertEqual("prefers-reduced-motion" in body, True)
+
+    def test_entrance_animation_only_when_requested(self):
+        import ui_styles
+        self.assertNotIn("ba-rise", ui_styles.css("light"))
+        self.assertIn("ba-rise", ui_styles.css("light", animate_results=True))
+
+
 class AppTests(unittest.TestCase):
     def setUp(self):
         env = patch.dict(os.environ, OFFLINE_ENV)
@@ -255,8 +275,9 @@ class AppTests(unittest.TestCase):
             process.assert_called_once()
             self.assertTrue(button(app, "Process").disabled)
             metrics = {m.label: m.value for m in app.metric}
-            self.assertEqual(list(metrics), ["Provider", "Bill month", "Units used", "Payable by due date",
-                                             "Due date", "Payable after due date"])
+            # UI milestone: hero (amount due, due date) first, then the four secondary facts.
+            self.assertEqual(list(metrics), ["Payable by due date", "Due date", "Provider", "Bill month",
+                                             "Units used", "Payable after due date"])
             self.assertEqual(metrics["Payable by due date"], "Rs 1,100")
             self.assertEqual(metrics["Bill month"], "Sep 2026")
             subheaders = [h.value for h in app.subheader]

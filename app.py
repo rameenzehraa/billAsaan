@@ -9,6 +9,7 @@ import logging
 import streamlit as st
 
 import limits
+import ui_styles
 import viewer
 from config import load_limits
 from failures import ProcessingFailure, safe_failure
@@ -51,9 +52,12 @@ def _process(key: str):
         ss.busy = key
 
 
-CONSENT = ("This free demo uses Google's Gemini free tier; Google may use uploaded content to improve its products. "
-           "Cover your name, address and reference numbers before uploading.")
+CONSENT_NOTE = "This free demo uses Google's Gemini free tier, so Google may use uploaded bills to improve its products."
+CONSENT = "I've covered my name, address and reference numbers"
 PAID_NOTE = "Your bill is processed in memory and not stored."
+THEME = getattr(getattr(st.context, "theme", None), "type", None) or "light"
+# Results fade/rise once: only on the run right after processing (flag popped), never on later reruns.
+st.html(ui_styles.css(THEME, animate_results=ss.pop("animate_results", False)))
 
 try:
     LIMITS = load_limits()
@@ -76,12 +80,18 @@ with st.sidebar, st.expander("System stats", expanded=False, icon=":material/mon
     st.caption(f"Today: {limits.extractions.count}/{LIMITS.daily_extraction_cap} extractions, "
                f"{limits.chats.count}/{LIMITS.daily_chat_cap} chat questions")
 
-st.title("BillAsaan", anchor=False)
-st.caption("Bijli ka bill, ab aasaan. Upload your electricity bill to see its key numbers.")
+with st.container(key="brand"):
+    st.title("BillAsaan", anchor=False)
+    with st.container(key="tagline_row"):
+        st.html('<div class="ba-tagline"><p>Bijli ka bill, ab aasaan.</p></div>')
+    st.caption("Upload a photo or PDF of your electricity bill to see what you owe, when it's due, and ask about any "
+               "line on it.")
 
 # ---------- privacy + choose a bill ----------
 if LIMITS.free_tier:
-    consent = st.checkbox(CONSENT, key="consent")
+    with st.container(key="consent_box"):
+        st.caption(CONSENT_NOTE)
+        consent = st.checkbox(CONSENT, key="consent")
 else:
     st.caption(PAID_NOTE)
     consent = True
@@ -136,6 +146,7 @@ if ss.busy is not None:
     try:
         if is_sample and (cached := limits.cached_sample(busy_key)) is not None:
             ss.results[busy_key] = cached  # reviewed sample already processed on this server: no API call
+            ss.animate_results = True
             stats.bump("cache_hits")
         elif limits.bills_left(ss, LIMITS.max_bills_per_session) == 0:
             ss.errors[busy_key] = limits.BILLS_LIMIT.format(n=LIMITS.max_bills_per_session)
@@ -144,18 +155,22 @@ if ss.busy is not None:
             ss.errors[busy_key] = limits.DAILY_LIMIT
             stats.bump("limit_blocks")
         else:
-            with st.spinner("Reading your bill…"):
+            with st.status("Reading bill…", expanded=False) as progress:
                 log.info("process image=%s: calling extraction API", busy_key[:12])
                 outcome, fell_back, exhausted = limits.with_fallback(lambda: _extract_once(data, mime))
-            if fell_back:
-                stats.bump("fallbacks")
-            if exhausted:  # 429/quota on both models: never cached, never a raw error
-                ss.errors[busy_key] = limits.DAILY_LIMIT
-            else:
-                ss.results[busy_key] = viewer.build_view(outcome)
-                ss.bills_used += 1
-                if is_sample:
-                    limits.store_sample(busy_key, ss.results[busy_key])
+                if fell_back:
+                    stats.bump("fallbacks")
+                if exhausted:  # 429/quota on both models: never cached, never a raw error
+                    ss.errors[busy_key] = limits.DAILY_LIMIT
+                    progress.update(label="Daily limit reached", state="error")
+                else:
+                    progress.update(label="Checking numbers…")
+                    ss.results[busy_key] = viewer.build_view(outcome)
+                    ss.bills_used += 1
+                    ss.animate_results = True  # one entrance animation on the next run only
+                    if is_sample:
+                        limits.store_sample(busy_key, ss.results[busy_key])
+                    progress.update(label="Done", state="complete")
     except Exception as error:  # noqa: BLE001 - only sanitized categories reach the UI or log
         failure = error if isinstance(error, ProcessingFailure) else ProcessingFailure(safe_failure(error, "processing"))
         ss.errors[busy_key] = str(failure)
@@ -173,9 +188,27 @@ if key in ss.errors:
     st.error(ss.errors[key])
     st.button("Retry", icon=":material/refresh:", on_click=_process, args=(key,))
 
+def _usage_chart(result):
+    """Bars in date order; this bill's month in the accent colour, earlier months muted."""
+    import altair as alt
+    t = ui_styles.tokens(THEME)
+    rows = viewer.chart_rows(result)
+    order = [r["Label"] for r in rows]
+    values = [{"Label": r["Label"], "Units": r["Units"], "Bar": r["Bar"]} for r in rows]
+    return (alt.Chart(alt.Data(values=values))
+            .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+            .encode(x=alt.X("Label:O", sort=order, title=None,
+                            axis=alt.Axis(labelAngle=0, labelOverlap="greedy", ticks=False, domain=False)),
+                    y=alt.Y("Units:Q", title="Units (kWh)", axis=alt.Axis(tickCount=4, domain=False)),
+                    color=alt.Color("Bar:N", legend=None,
+                                    scale=alt.Scale(domain=["Earlier", "This bill"], range=[t["bar"], t["accent"]])),
+                    tooltip=[alt.Tooltip("Label:O", title="Month"), alt.Tooltip("Units:Q", title="Units", format=",")])
+            .properties(height=220, padding={"left": 4, "right": 18, "top": 6, "bottom": 4}))
+
+
 view = ss.results.get(key)
 img_col, stats_col = st.columns([2, 3], gap="large")
-with img_col:
+with img_col, st.container(key="billimg"):
     st.image(data, alt="Your uploaded electricity bill", width="stretch")
 
 with stats_col:
@@ -189,38 +222,44 @@ with stats_col:
         st.stop()
 
     bill, result = view["result"].level1, view["result"]
-    cards = [("Provider", viewer.show(bill.provider)), ("Bill month", viewer.month(bill.bill_month)),
-             ("Units used", viewer.units(bill.units_consumed)),
-             ("Payable by due date", viewer.money(bill.payable_within_due_date)),
-             ("Due date", viewer.date(bill.due_date)),
-             ("Payable after due date", viewer.money(bill.payable_after_due_date))]
-    for row in (cards[:3], cards[3:]):
-        for col, (name, value) in zip(st.columns(3), row):
-            col.metric(name, value, border=True)
+    with st.container(key="results"):
+        with st.container(key="hero"):  # the two numbers people open a bill for: amount, then when it's due
+            st.metric("Payable by due date", viewer.money(bill.payable_within_due_date))
+            with st.container(key="hero_date"):
+                st.metric("Due date", viewer.date(bill.due_date))
+        with st.container(key="facts"):
+            facts = [("Provider", viewer.show(bill.provider)), ("Bill month", viewer.month(bill.bill_month)),
+                     ("Units used", viewer.units(bill.units_consumed)),
+                     ("Payable after due date", viewer.money(bill.payable_after_due_date))]
+            for row in (facts[:2], facts[2:]):
+                for col, (name, value) in zip(st.columns(2), row):
+                    col.metric(name, value, border=True)
 
-    st.subheader("Charges and taxes", anchor=False)
-    items = viewer.line_items(result)
-    if items:
-        st.dataframe(items, hide_index=True, width="stretch")
-    else:
-        st.caption(f"Charges and taxes: {viewer.NOT_SHOWN.lower()}.")
+        st.subheader("Charges and taxes", anchor=False)
+        items = viewer.line_items(result)
+        if items:
+            st.dataframe(items, hide_index=True, width="stretch",
+                         height="auto" if len(items) <= 10 else 36 * 10 + 38)
+        else:
+            st.caption(f"Charges and taxes: {viewer.NOT_SHOWN.lower()}.")
 
-    history = viewer.history_rows(result)
-    if history:
-        st.subheader("Usage history", anchor=False)
-        st.bar_chart(history, x="Month", y="Units", x_label="Month", y_label="Units (kWh)",
-                     alt="Monthly units consumed, in date order")
+        if viewer.history_rows(result):
+            st.subheader("Usage history", anchor=False)
+            st.altair_chart(_usage_chart(result), width="stretch")
+            st.caption("Units per month in date order; this bill's month is highlighted.")
 
-    st.subheader("Checks", anchor=False)
-    st.caption("A passing check finds no inconsistency; it doesn't prove every value is right.")
-    for check in view["checks"]:
-        color, icon = BADGE.get(check["status"], BADGE["Insufficient Data"])
-        with st.container(border=True):
-            with st.container(horizontal=True, vertical_alignment="center"):
-                st.badge(check["status"], color=color, icon=icon)
-                st.markdown(f"**{CHECK_LABELS.get(check['name'], check['name'])}**")
-            if check["status"] != "Matched" and check.get("reason"):
-                st.caption(check["reason"])  # plain-English why, with the bill's numbers
+        st.subheader("Checks", anchor=False)
+        st.caption("A passing check finds no inconsistency; it doesn't prove every value is right.")
+        with st.container(key="checks", border=True):
+            for i, check in enumerate(view["checks"]):
+                color, icon = BADGE.get(check["status"], BADGE["Insufficient Data"])
+                if i:
+                    st.divider()
+                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    st.badge(check["status"], color=color, icon=icon)
+                    st.markdown(f"**{CHECK_LABELS.get(check['name'], check['name'])}**")
+                if check["status"] != "Matched" and check.get("reason"):
+                    st.caption(check["reason"])  # plain-English why, with the bill's numbers
 
 # ---------- chat with the bill (text only: no image is re-sent) ----------
 import chat  # noqa: E402 - only needed once a valid bill is shown
@@ -250,14 +289,14 @@ if limits.questions_left(messages, LIMITS.max_questions_per_bill) == 0:
     chat_block = limits.QUESTIONS_LIMIT.format(n=LIMITS.max_questions_per_bill)
 elif limits.chats.remaining(LIMITS.daily_chat_cap) == 0:
     chat_block = limits.DAILY_LIMIT
-with st.container(horizontal=True):
+with st.container(horizontal=True, key="chips", gap="small"):
     for suggestion in chat.SUGGESTIONS:
         st.button(suggestion, on_click=_ask, args=(key, suggestion), disabled=answering or chat_block is not None)
 
 for message in messages:
     with st.chat_message(message["role"]):
         if message["role"] == "user":
-            st.text(message["content"])
+            st.text(message["content"], width="stretch")  # plain text (no markdown); full width so RTL can align
         elif message.get("kind") == "failed":
             st.error(message["content"], icon=":material/error:")
         elif message.get("kind") in ("invalid", "limit"):
@@ -265,9 +304,10 @@ for message in messages:
         else:
             st.markdown(message["content"])
             if message.get("is_estimate"):
-                st.badge("Estimate", color="orange", icon=":material/info:")
-                if message.get("method"):
-                    st.caption(message["method"])
+                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    st.badge("Estimate", color="gray", icon=":material/info:")
+                    if message.get("method"):
+                        st.caption(message["method"])
 
 if answering and ss.chat_pending[0] == key:
     question = ss.chat_pending[1]
