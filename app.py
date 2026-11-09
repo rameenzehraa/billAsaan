@@ -215,9 +215,12 @@ with stats_col:
     st.caption("A passing check finds no inconsistency; it doesn't prove every value is right.")
     for check in view["checks"]:
         color, icon = BADGE.get(check["status"], BADGE["Insufficient Data"])
-        with st.container(border=True, horizontal=True, vertical_alignment="center"):
-            st.badge(check["status"], color=color, icon=icon)
-            st.markdown(f"**{CHECK_LABELS.get(check['name'], check['name'])}**")
+        with st.container(border=True):
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.badge(check["status"], color=color, icon=icon)
+                st.markdown(f"**{CHECK_LABELS.get(check['name'], check['name'])}**")
+            if check["status"] != "Matched" and check.get("reason"):
+                st.caption(check["reason"])  # plain-English why, with the bill's numbers
 
 # ---------- chat with the bill (text only: no image is re-sent) ----------
 import chat  # noqa: E402 - only needed once a valid bill is shown

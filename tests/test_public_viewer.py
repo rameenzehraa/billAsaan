@@ -167,6 +167,69 @@ class D11RegressionTests(unittest.TestCase):
         self.assertEqual([r["Units"] for r in history_rows(result)], [1, 2, 3])
 
 
+class ReadingCheckTests(unittest.TestCase):
+    """Readings vs units: time-of-use registers, multipliers/adjustments, genuine mismatches. Values never change."""
+
+    def check(self, prev, cur, units, rates=(), flags=()):
+        from checks import check_reading_diff
+        from schema import RateSlab
+        b = Level1Bill(previous_reading=prev, current_reading=cur, units_consumed=units)
+        internal = InternalFacts(rates=[RateSlab(description=d, units=u) for d, u in rates], validation_flags=list(flags))
+        before = (b.model_dump(), internal.model_dump())
+        result = check_reading_diff(b, internal)
+        self.assertEqual((b.model_dump(), internal.model_dump()), before)
+        return result
+
+    KE_0826_RATES = [("Fixed Charges", 4), ("Variable Off Peak", 14), ("Variable Peak", 2),
+                     ("Uniform Quarterly Adjustment", 16), ("Additional Surcharge (PHL)", 16)]
+
+    def test_time_of_use_ke_0826_matches(self):
+        # Off-peak register 30000 -> 30014 (14) + peak register (2) = 16 billed units.
+        r = self.check(30000, 30014, 16, self.KE_0826_RATES)
+        self.assertEqual(r["status"], "Matched")
+        self.assertEqual(r["reason"], "")
+
+    def test_time_of_use_not_reconciled_is_insufficient(self):
+        r = self.check(30000, 30014, 20, self.KE_0826_RATES)
+        self.assertEqual(r["status"], "Insufficient Data")
+        self.assertIn("peak and off-peak", r["reason"])
+        for n in ("14", "20"):
+            self.assertIn(n, r["reason"])
+
+    def test_multiplier_or_adjustment_noted_is_insufficient(self):
+        for flag in ("meter multiplier MF 40 printed", "units adjusted by DISCO"):
+            with self.subTest(flag=flag):
+                r = self.check(100, 110, 400, flags=[flag])
+                self.assertEqual(r["status"], "Insufficient Data")
+                self.assertIn("multiplier or adjustment", r["reason"])
+
+    def test_units_multiple_of_difference_is_insufficient(self):
+        r = self.check(100, 110, 400)  # 400 = 40 x 10: likely an unprinted multiplier
+        self.assertEqual(r["status"], "Insufficient Data")
+        self.assertIn("40 times", r["reason"])
+
+    def test_genuine_difference_stays_mismatch_with_reason(self):
+        r = self.check(1000, 1400, 412)
+        self.assertEqual(r["status"], "Mismatch")
+        self.assertEqual(r["reason"], "Units on bill (412) differ from the reading difference (1,400 − 1,000 = 400). "
+                                      "Bills sometimes adjust units.")
+
+    def test_tariff_adjustment_line_is_not_a_meter_adjustment(self):
+        r = self.check(1000, 1400, 412, [("Uniform Quarterly Adjustment", 412)])
+        self.assertEqual(r["status"], "Mismatch")
+
+    def test_every_non_matched_check_has_a_reason(self):
+        from checks import run_checks
+        bad = Level1Bill(bill_month="2026-09", previous_reading=1000, current_reading=1400, units_consumed=412,
+                         charges=[{"type": "energy", "amount": 100}], total_charges=100, total_taxes=10,
+                         current_bill=500, arrears=0, payable_within_due_date=900, payable_after_due_date=800)
+        for c in run_checks(bad, InternalFacts()) + run_checks(Level1Bill(), InternalFacts()):
+            if c["status"] != "Matched":
+                with self.subTest(check=c["name"], status=c["status"]):
+                    self.assertTrue(c["reason"])
+                    self.assertNotIn("None", c["reason"])
+
+
 class AppTests(unittest.TestCase):
     def setUp(self):
         env = patch.dict(os.environ, OFFLINE_ENV)
@@ -217,6 +280,20 @@ class AppTests(unittest.TestCase):
             self.assertEqual(values.count(NOT_SHOWN), 3)
             self.assertFalse(any(v in ("", "None", None) for v in values))
             self.assertNotIn("None", all_text(app))
+
+    def test_check_badges_show_reason_only_when_not_matched(self):
+        mismatch = fixture(previous_reading=1000, current_reading=1400, units_consumed=412)
+        with patch("streamlit.file_uploader", return_value=Upload(image_bytes())), \
+             patch("viewer.process_image", return_value=mismatch):
+            app = AppTest.from_file(APP, default_timeout=30).run()
+            button(app, "Process").click().run()
+            captions = [c.value for c in app.caption]
+            self.assertIn("Units on bill (412) differ from the reading difference (1,400 − 1,000 = 400). "
+                          "Bills sometimes adjust units.", captions)
+            checks = next(iter(app.session_state["results"].values()))["checks"]
+            matched_details = [c["detail"] for c in checks if c["status"] == "Matched"]
+            self.assertTrue(matched_details)
+            self.assertFalse(any(d in captions for d in matched_details))
 
     def test_not_a_bill(self):
         with patch("streamlit.file_uploader", return_value=Upload(image_bytes("green"))), \
