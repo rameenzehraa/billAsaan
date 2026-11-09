@@ -1,129 +1,144 @@
-"""BillAsaan public bill explainer. Competition batch workflow remains in run.py."""
-import hashlib
+"""BillAsaan public page: upload one electricity bill -> Process -> key stats.
+
+Batch/CSV work stays in run.py (CLI). Uploads live only in memory and session_state.
+Run: streamlit run app.py
+"""
 import json
 import logging
 
 import streamlit as st
-from pydantic import ValidationError
 
-from schema import ExtractionResult
+import viewer
 from failures import ProcessingFailure, safe_failure
-from viewer import apply_result, process_image, select_bill, validate_image, verified_samples
+
+log = logging.getLogger("app")
+if not log.handlers:  # Streamlit reruns the script; attach the console handler once
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+
+BADGE = {"Matched": ("green", ":material/check_circle:"), "Mismatch": ("red", ":material/cancel:"),
+         "Insufficient Data": ("gray", ":material/help:")}
+CHECK_LABELS = {"date_formats": "Date formats", "reading_diff": "Readings match units",
+                "charges_taxes_vs_current_bill": "Charges + taxes = current bill",
+                "current_plus_arrears_vs_payable": "Current bill + arrears = payable",
+                "late_ge_within": "Late amount ≥ amount due"}
 
 st.set_page_config(page_title="BillAsaan", page_icon="⚡", layout="wide")
 ss = st.session_state
-st.title("BillAsaan")
-st.caption("Bijli ka bill, ab aasaan. Understand your electricity bill.")
-st.caption("JPG or PNG · up to 10 MB. Processing sends the selected image to the existing AI service. "
-           "Bill results stay in this session and are not saved to the shared bill cache.")
-mode = st.radio("Choose a bill", ["Upload my bill", "Try a sample"], horizontal=True, key="source_mode")
-data, mime, identity = None, None, None
-if mode == "Upload my bill":
-    upload = st.file_uploader("Upload my bill", type=["jpg", "jpeg", "png"], max_upload_size=10)
-    if upload is not None:
-        try:
-            raw = upload.getvalue()
-            data, mime = validate_image(upload.name, raw)
-            identity = "upload:" + hashlib.sha256(raw).hexdigest()
-        except ValueError as error:
-            st.error(str(error))
-else:
-    samples = verified_samples()
-    if not samples:
-        st.info("No verified anonymized samples are available yet. Upload your own bill to continue.")
-    else:
-        index = st.selectbox("Anonymized sample", range(len(samples)),
-                             format_func=lambda i: samples[i]["label"], index=None)
-        if index is not None and isinstance(index, int) and 0 <= index < len(samples):
-            sample = samples[index]
-            data, mime, identity = sample["data"], sample["mime"], "sample:" + sample["id"]
-select_bill(ss, (mode, identity))
+ss.setdefault("results", {})   # image sha256 -> build_view() output; reruns read this, never the API
+ss.setdefault("errors", {})    # image sha256 -> safe user-facing message
+ss.setdefault("busy", None)    # image sha256 being processed, or None
+ss.setdefault("use_sample", False)
 
 
-def start_processing():
-    if identity and ss.original is None and not ss.busy:
-        ss.busy = True
-        ss.process_error = None
-        ss.process_diagnostic = None
+def _use_upload():
+    ss.use_sample = False
 
 
-if data:
-    with st.expander("Bill preview", expanded=True):
-        st.image(data, alt="Preview of your selected bill", width="stretch")
-st.button("Process", type="primary", on_click=start_processing,
-          disabled=data is None or ss.busy or ss.original is not None)
-if ss.busy:
+def _use_sample():
+    ss.use_sample = True
+
+
+def _process(key: str):
+    if ss.busy is None and key not in ss.results:
+        ss.errors.pop(key, None)
+        ss.busy = key
+
+
+st.title("BillAsaan", anchor=False)
+st.caption("Bijli ka bill, ab aasaan. Upload your electricity bill to see its key numbers.")
+
+# ---------- choose a bill ----------
+samples = viewer.verified_samples()
+upload = st.file_uploader("Upload your bill", type=viewer.UPLOAD_TYPES, max_upload_size=8,
+                          on_change=_use_upload, key="upload",
+                          help="JPG, PNG, PDF (first page) or HEIC, up to 8 MB. Kept in memory for this session only.")
+if samples:
+    st.button("Try a sample bill", icon=":material/description:", on_click=_use_sample)
+
+data = mime = key = None
+if ss.use_sample and samples:
+    data, mime = samples[0]["data"], samples[0]["mime"]
+elif upload is not None:
+    try:
+        data, mime = viewer.prepare_upload(upload.name, upload.getvalue())
+    except ValueError as error:
+        st.error(str(error))
+if data is not None:
+    key = viewer.image_key(data)
+
+st.button("Process", type="primary", icon=":material/bolt:", on_click=_process, args=(key,),
+          disabled=key is None or ss.busy is not None or key in ss.results)
+
+# ---------- one API call per new image ----------
+if ss.busy is not None:
+    busy_key = ss.busy
     try:
         with st.spinner("Reading your bill…"):
-            apply_result(ss, process_image(data, mime), original=True)
-    except Exception as error:
+            log.info("process image=%s: calling extraction API", busy_key[:12])
+            ss.results[busy_key] = viewer.build_view(viewer.process_image(data, mime))
+    except Exception as error:  # noqa: BLE001 - only sanitized categories reach the UI or log
         failure = error if isinstance(error, ProcessingFailure) else ProcessingFailure(safe_failure(error, "processing"))
-        ss.process_error = str(failure)
-        ss.process_diagnostic = failure.diagnostic
-        logging.getLogger("app").warning("processing_failed %s", json.dumps(failure.diagnostic))
+        ss.errors[busy_key] = str(failure)
+        log.warning("processing_failed %s", json.dumps(failure.diagnostic))
     finally:
-        ss.busy = False
+        ss.busy = None
     st.rerun()
-if ss.process_error:
-    st.error(ss.process_error)
-    if ss.get("process_diagnostic"):
-        with st.expander("Processing diagnostics"):
-            st.json(ss.process_diagnostic)
-if ss.corrected is None:
-    if not ss.process_error:
-        st.info("Choose an image, then select Process to see its details.")
-else:
-    with st.expander("Review extracted details"):
-        st.caption("Correct fields below using JSON. Missing values use null. Changes apply locally; "
-                   "the original extraction stays separate. Include level1 and internal (usage history).")
-        with st.expander("Original extraction"):
-            st.json(ss.original.model_dump(mode="json"))
-        with st.form("review_form"):
-            draft = st.text_area("Extracted details and corrections", ss.corrected.model_dump_json(indent=2),
-                                 height=350, key=f"review_details_{ss.revision}")
-            save = st.form_submit_button("Apply corrections")
-        if save:
-            try:
-                corrected = ExtractionResult.model_validate_json(draft)
-                # Pydantic accepts nonfinite floats; bills and calculations must not.
-                json.dumps(corrected.model_dump(mode="json"), allow_nan=False)
-                apply_result(ss, corrected)
-                ss.messages = []
-                ss.revision += 1
-                st.rerun()
-            except (ValidationError, ValueError):
-                st.error("Corrections are invalid. Check field names, numeric amounts and date formats. No changes applied.")
-        st.caption("Checks and calculations are recomputed after each valid correction.")
-    bill = ss.corrected.level1.model_dump(mode="json")
-    st.subheader("Bill summary")
-    st.dataframe([{"Detail": k.replace("_", " ").capitalize(), "Value": "Not shown" if v is None else str(v)}
-                  for k, v in bill.items() if not isinstance(v, list)], hide_index=True, width="stretch")
-    st.subheader("Charges and taxes")
-    for field in ("charges", "taxes"):
-        st.markdown(f"**{field.capitalize()}**")
-        if bill[field]:
-            st.dataframe(bill[field], hide_index=True, width="stretch")
-        else:
-            st.caption("No items listed separately.")
-    st.subheader("Usage history")
-    history = ss.corrected.internal.usage_history
-    if history:
-        st.dataframe([row.model_dump() for row in history], hide_index=True, width="stretch")
-    else:
-        st.caption("No usage history was extracted from this bill.")
-    st.subheader("Checks")
-    st.caption("A passing check finds no inconsistency; it does not prove the extraction is correct.")
-    for check in ss.checks:
-        with st.container(border=True):
-            st.badge(check["status"], color={"Matched": "green", "Mismatch": "red"}.get(check["status"], "gray"))
-            st.text(check["name"].replace("_", " ").capitalize())
-            st.text(check["detail"])
 
-st.subheader("Ask about this bill")
-st.info("Chat integration is pending. Questions cannot be submitted yet; no AI replies are generated.")
-for question in ("Why is my bill this amount?", "Which taxes am I paying?", "How has my usage changed?"):
-    st.button(question, disabled=True)
-for message in ss.messages:
-    with st.chat_message(message["role"]):
-        st.text(message["content"])
-st.chat_input("Ask about this bill (integration pending)", disabled=True, key="chat_input")
+if key is None:
+    if not samples:
+        st.info("Upload a bill photo or PDF, then select **Process**.")
+    st.stop()
+
+if key in ss.errors:
+    st.error(ss.errors[key])
+    st.button("Retry", icon=":material/refresh:", on_click=_process, args=(key,))
+
+view = ss.results.get(key)
+img_col, stats_col = st.columns([2, 3], gap="large")
+with img_col:
+    st.image(data, alt="Your uploaded electricity bill", width="stretch")
+
+with stats_col:
+    if view is None:
+        if key not in ss.errors:
+            st.info("Select **Process** to read this bill.")
+        st.stop()
+    log.info("image=%s served from session cache (0 API calls)", key[:12])
+    if not view["is_bill"]:
+        st.warning(viewer.NOT_A_BILL, icon=":material/image_not_supported:")
+        st.stop()
+
+    bill, result = view["result"].level1, view["result"]
+    cards = [("Provider", viewer.show(bill.provider)), ("Bill month", viewer.month(bill.bill_month)),
+             ("Units used", viewer.units(bill.units_consumed)),
+             ("Payable by due date", viewer.money(bill.payable_within_due_date)),
+             ("Due date", viewer.date(bill.due_date)),
+             ("Payable after due date", viewer.money(bill.payable_after_due_date))]
+    for row in (cards[:3], cards[3:]):
+        for col, (name, value) in zip(st.columns(3), row):
+            col.metric(name, value, border=True)
+
+    st.subheader("Charges and taxes", anchor=False)
+    items = viewer.line_items(result)
+    if items:
+        st.dataframe(items, hide_index=True, width="stretch")
+    else:
+        st.caption(f"Charges and taxes: {viewer.NOT_SHOWN.lower()}.")
+
+    history = viewer.history_rows(result)
+    if history:
+        st.subheader("Usage history", anchor=False)
+        st.bar_chart(history, x="Month", y="Units", y_label="Units (kWh)", sort=False,
+                     alt="Monthly units consumed, as printed on the bill")
+
+    st.subheader("Checks", anchor=False)
+    st.caption("A passing check finds no inconsistency; it doesn't prove every value is right.")
+    for check in view["checks"]:
+        color, icon = BADGE.get(check["status"], BADGE["Insufficient Data"])
+        with st.container(border=True, horizontal=True, vertical_alignment="center"):
+            st.badge(check["status"], color=color, icon=icon)
+            st.markdown(f"**{CHECK_LABELS.get(check['name'], check['name'])}**")

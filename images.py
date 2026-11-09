@@ -50,3 +50,45 @@ def load_image(path: str | Path) -> tuple[bytes, str, tuple[int, int], tuple[int
             return buf.getvalue(), MIME_BY_FORMAT[out_fmt], original_size, fixed.size
     except (OSError, UnidentifiedImageError, ValueError) as e:
         raise ImageLoadError(f"Cannot read image file '{p}': {type(e).__name__}: {e}") from e
+
+
+# ---- Public uploads: decode in memory only (never written to disk) ----
+
+UPLOAD_EXTS = {".png", ".jpg", ".jpeg", ".pdf", ".heic"}
+_UPLOAD_FORMATS = {".png": {"PNG"}, ".jpg": {"JPEG"}, ".jpeg": {"JPEG"}, ".heic": {"HEIF", "HEIC"}}
+UPLOAD_MAX_PIXELS = 40_000_000
+
+
+def decode_upload(name: str, data: bytes) -> Image.Image:
+    """Return an RGB, EXIF-upright PIL image from upload bytes. PDF: first page only.
+    Raises ImageLoadError on anything unreadable or whose contents don't match the extension."""
+    suffix = Path(name).suffix.lower()
+    if suffix not in UPLOAD_EXTS:
+        raise ImageLoadError("unsupported type")
+    try:
+        if suffix == ".pdf":
+            import pypdfium2 as pdfium
+            pdf = pdfium.PdfDocument(data)
+            try:
+                if len(pdf) < 1:
+                    raise ImageLoadError("empty PDF")
+                page = pdf[0]
+                w, h = page.get_size()
+                scale = min(3.0, MAX_IMAGE_LONG_SIDE / max(w, h, 1))  # ~2000 px long side
+                return page.render(scale=scale).to_pil().convert("RGB")
+            finally:
+                pdf.close()
+        if suffix == ".heic":
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+        with Image.open(io.BytesIO(data)) as img:
+            if img.format not in _UPLOAD_FORMATS[suffix]:
+                raise ImageLoadError("contents do not match file type")
+            if img.width * img.height > UPLOAD_MAX_PIXELS:
+                raise ImageLoadError("too many pixels")
+            img.load()
+            return ImageOps.exif_transpose(img).convert("RGB")
+    except ImageLoadError:
+        raise
+    except Exception as e:  # noqa: BLE001 - any decoder failure is "unreadable"
+        raise ImageLoadError(type(e).__name__) from None

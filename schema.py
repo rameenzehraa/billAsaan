@@ -16,6 +16,10 @@ ChargeType = Literal[
     "energy", "fixed", "fpa", "quarterly_adjustment", "surcharge", "meter_rent", "subsidy", "other"
 ]
 TaxType = Literal["gst", "electricity_duty", "income_tax", "municipal_tax", "other_tax"]
+Provider = Literal["IESCO", "LESCO", "KE", "MEPCO", "FESCO", "GEPCO", "PESCO", "HESCO", "SEPCO",
+                   "QESCO", "TESCO", "OTHER"]
+PROVIDERS = set(Provider.__args__)
+PROVIDER_ALIASES = {"KESC": "KE", "K-ELECTRIC": "KE", "K ELECTRIC": "KE", "KELECTRIC": "KE"}
 
 
 class Charge(BaseModel):
@@ -35,7 +39,7 @@ class Level1Bill(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["KE", "LESCO", "IESCO"] | None = None
+    provider: Provider | None = None
     tariff: str | None = None
     sanctioned_load_kw: Number | None = None
 
@@ -58,6 +62,16 @@ class Level1Bill(BaseModel):
     arrears: Number | None = None
     payable_within_due_date: Number | None = None
     payable_after_due_date: Number | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _provider(cls, v):
+        """Known DISCOs pass; any other non-empty value becomes OTHER (never a validation failure)."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        key = str(v).strip().upper()
+        key = PROVIDER_ALIASES.get(key, key)
+        return key if key in PROVIDERS else "OTHER"
 
     @field_validator("bill_month")
     @classmethod

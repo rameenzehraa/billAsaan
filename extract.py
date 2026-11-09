@@ -116,9 +116,12 @@ INTERNAL FIELDS (used later to answer questions; same no-recalculation and no-PI
 """
 
 
-def _client(api_key: str) -> genai.Client:
+def _client(api_key: str, force_ipv4: bool | None = None) -> genai.Client:
+    """force_ipv4: pass settings.force_ipv4 from the caller; None reads settings (standalone use)."""
+    if force_ipv4 is None:
+        force_ipv4 = load_settings().force_ipv4
     client_args = {}
-    if load_settings().force_ipv4:
+    if force_ipv4:
         # Bind direct connections to IPv4 on networks with a broken IPv6 TLS path.
         # HTTPTransport retains certificate/hostname verification and environment CA trust.
         client_args["transport"] = httpx.HTTPTransport(local_address="0.0.0.0", retries=0)
@@ -327,7 +330,7 @@ def extract_bill(bill_id: str, provider: str | None, image_path: str | Path,
             log.error("bill=%s setup failed: %s", bill_id, meta["error"])
         return fallback, meta
 
-    client = _client(settings.api_key)
+    client = _client(settings.api_key, settings.force_ipv4)
     image_part = types.Part.from_bytes(data=data, mime_type=mime)
     contents = [
         image_part,
