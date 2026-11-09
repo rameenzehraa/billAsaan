@@ -4,7 +4,7 @@
 chat that answers questions about it in English, Urdu or Roman Urdu, with every number computed by code.
 
 [![tests](https://github.com/rameenzehraa/billAsaan/actions/workflows/tests.yml/badge.svg)](https://github.com/rameenzehraa/billAsaan/actions/workflows/tests.yml)
-&nbsp;**Live demo:** <PASTE LIVE URL>
+&nbsp;**Live demo:** `<PASTE URL>` <!-- TODO: replace with the https://….streamlit.app link -->
 
 <!-- Demo GIF: record upload → Process → stats → a chat question, save as docs/demo.gif, then replace this line with:
 ![BillAsaan demo](docs/demo.gif) -->
@@ -68,10 +68,25 @@ content or questions. Chat refuses to repeat personal identifiers.
 
 ## Eval
 
-Extraction accuracy (per field, with *invented* vs *missed* counted separately), charge and tax line matching, and
-chat number accuracy against `calc.py` are measured by [`eval/run_eval.py`](eval/README.md). Current results:
-**[eval/RESULTS.md](eval/RESULTS.md)**. The sample is still small (n=1 hand-verified bill, which was also used during
-prompt development); more verified labels are being added, so treat the numbers as indicative.
+[`eval/run_eval.py`](eval/README.md) measures per-field extraction accuracy (counting *invented* values and *missed*
+values separately), charge and tax line matching by type, and whether chat answers state the number `calc.py`
+computes.
+
+**Status: no held-out accuracy number yet.**
+
+- So far **n = 1** hand-verified bill: `KESC_0008`. That is the bill the extraction prompt was **tuned on** during
+  the hackathon, so its scores ([eval/RESULTS.md](eval/RESULTS.md)) only show the pipeline runs end to end. They are
+  not an accuracy claim.
+- A **held-out eval is in progress:** real bills the prompt has never seen, each labelled field by field against
+  the image.
+
+| Held-out eval | Result |
+|---|---|
+| Bills (n) | _TBD_ |
+| Level 1 field accuracy | _TBD_ |
+| Invented / missed values | _TBD_ |
+| Charge and tax lines (precision / recall) | _TBD_ |
+| Chat number accuracy | _TBD_ |
 
 ## Run locally
 
