@@ -4,7 +4,7 @@
 chat that answers questions about it in English, Urdu or Roman Urdu, with every number computed by code.
 
 [![tests](https://github.com/rameenzehraa/billAsaan/actions/workflows/tests.yml/badge.svg)](https://github.com/rameenzehraa/billAsaan/actions/workflows/tests.yml)
-&nbsp;**Live demo:** `<PASTE URL>` <!-- TODO: replace with the https://….streamlit.app link -->
+&nbsp;**Live demo:** [billasaan.streamlit.app](https://billasaan.streamlit.app/)
 
 <!-- Demo GIF: record upload → Process → stats → a chat question, save as docs/demo.gif, then replace this line with:
 ![BillAsaan demo](docs/demo.gif) -->
