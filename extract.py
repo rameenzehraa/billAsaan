@@ -252,16 +252,60 @@ def _config() -> types.GenerateContentConfig:
     )
 
 
+RATE_RETRY_MAX_S = 5.0  # longest wait for the single per-minute 429 retry
+
+
+def _error_details(e: Exception) -> list:
+    """The google.rpc details list of an APIError (QuotaFailure, RetryInfo, ...), or []."""
+    body = getattr(e, "details", None)
+    if isinstance(body, dict):
+        body = body.get("error", body)
+        details = body.get("details") if isinstance(body, dict) else None
+        return details if isinstance(details, list) else []
+    return []
+
+
+def _daily_quota(e: Exception) -> bool:
+    """True when a 429 names a per-day quota (e.g. quotaId GenerateRequestsPerDayPerProjectPerModel-FreeTier)."""
+    for d in _error_details(e):
+        for v in (d.get("violations") or []) if isinstance(d, dict) else []:
+            if isinstance(v, dict) and "perday" in str(v.get("quotaId", "")).lower():
+                return True
+    return False
+
+
+def _retry_delay(e: Exception) -> float:
+    """Server RetryInfo delay (e.g. "23s"), capped at RATE_RETRY_MAX_S; 2 s when absent."""
+    for d in _error_details(e):
+        delay = d.get("retryDelay") if isinstance(d, dict) else None
+        if isinstance(delay, str) and delay.endswith("s"):
+            try:
+                return max(0.0, min(float(delay[:-1]), RATE_RETRY_MAX_S))
+            except ValueError:
+                pass
+    return 2.0
+
+
 def _call(client: genai.Client, model: str, contents: list, bill_id: str, meta: dict,
           config: types.GenerateContentConfig | None = None):
     """One generate_content call with retries on transient errors only. Returns (response | None, error | None)."""
+    rate_retried = False
     for attempt in range(1, MAX_RETRIES + 2):
         meta["attempts"] += 1
         try:
             resp = client.models.generate_content(model=model, contents=contents, config=config or _config())
         except Exception as e:  # noqa: BLE001
-            if attempt <= MAX_RETRIES and _is_transient(e):
-                wait = 2 ** attempt * (3 if getattr(e, "code", None) == 429 else 1)
+            if getattr(e, "code", None) == 429:
+                # Daily quota: retrying the same model cannot succeed today -> fail now (limits.py falls back).
+                # Per-minute / unspecified rate limit: one short retry only.
+                if not _daily_quota(e) and not rate_retried and attempt <= MAX_RETRIES:
+                    rate_retried = True
+                    wait = _retry_delay(e)
+                    log.warning("bill=%s attempt=%d rate limited; one retry in %.1fs", bill_id, attempt, wait)
+                    time.sleep(wait)
+                    continue
+            elif attempt <= MAX_RETRIES and _is_transient(e):
+                wait = 2 ** attempt
                 log.warning("bill=%s attempt=%d transient error %s; retrying in %ds", bill_id, attempt, type(e).__name__, wait)
                 time.sleep(wait)
                 continue

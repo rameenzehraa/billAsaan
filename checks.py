@@ -61,7 +61,11 @@ def check_reading_diff(b: Level1Bill, internal: InternalFacts | None = None) -> 
 
 
 def check_charges_taxes_vs_current_bill(b: Level1Bill) -> dict:
-    fields = ["total_charges", "total_taxes", "current_bill"]
+    fields = ["charges", "total_charges", "total_taxes", "current_bill"]
+    # Components = itemized charge lines. Printed subtotals alone don't show what makes up the bill,
+    # so no charge lines -> Insufficient Data (never Matched). Taxes may be one combined total (§5.2: taxes []).
+    if not b.charges:
+        return _r("charges_taxes_vs_current_bill", INSUFFICIENT, "no itemized charge lines extracted", fields)
     charges = b.total_charges if b.total_charges is not None else (sum(c.amount for c in b.charges) if b.charges else None)
     taxes = b.total_taxes if b.total_taxes is not None else (sum(t.amount for t in b.taxes) if b.taxes else None)
     if charges is None or taxes is None or b.current_bill is None:

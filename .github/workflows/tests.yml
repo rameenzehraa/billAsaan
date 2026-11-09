@@ -1,0 +1,96 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mocked-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # No secrets: every model call in these tests is mocked.
+      API_KEY: ""
+      GEMINI_API_KEY: ""
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Block network access for the test run
+        run: |
+          mkdir -p "$RUNNER_TEMP/netguard"
+          cat > "$RUNNER_TEMP/netguard/sitecustomize.py" <<'PY'
+          """CI network guard: any non-loopback connection or DNS lookup raises AND is logged, so a test fails the job
+          even if application code catches the exception."""
+          import os
+          import socket
+
+          _LOG = os.environ.get("NETWORK_GUARD_LOG")
+          _LOCAL = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
+
+
+          def _blocked(target):
+              if _LOG:
+                  with open(_LOG, "a", encoding="utf-8") as fh:
+                      fh.write(f"{target}\n")
+              raise RuntimeError(f"network access blocked in tests: {target}")
+
+
+          def _host(address):
+              host = address[0] if isinstance(address, tuple) else address
+              return host.decode() if isinstance(host, bytes) else host
+
+
+          _connect, _connect_ex, _getaddrinfo = socket.socket.connect, socket.socket.connect_ex, socket.getaddrinfo
+
+
+          def connect(self, address):
+              if self.family in (socket.AF_INET, socket.AF_INET6) and _host(address) not in _LOCAL:
+                  _blocked(_host(address))
+              return _connect(self, address)
+
+
+          def connect_ex(self, address):
+              if self.family in (socket.AF_INET, socket.AF_INET6) and _host(address) not in _LOCAL:
+                  _blocked(_host(address))
+              return _connect_ex(self, address)
+
+
+          def getaddrinfo(host, *args, **kwargs):
+              name = host.decode() if isinstance(host, bytes) else host
+              if name is not None and name not in _LOCAL:
+                  _blocked(name)
+              return _getaddrinfo(host, *args, **kwargs)
+
+
+          socket.socket.connect, socket.socket.connect_ex, socket.getaddrinfo = connect, connect_ex, getaddrinfo
+          PY
+          echo "PYTHONPATH=$RUNNER_TEMP/netguard" >> "$GITHUB_ENV"
+          echo "NETWORK_GUARD_LOG=$RUNNER_TEMP/netguard/attempts.log" >> "$GITHUB_ENV"
+
+      - name: Run mocked tests
+        run: >-
+          python -m unittest -v
+          tests.test_deploy tests.test_limits tests.test_chat tests.test_public_viewer tests.test_transport
+
+      - name: Fail if any test attempted a network call
+        if: always()
+        run: |
+          if [ -s "$NETWORK_GUARD_LOG" ]; then
+            echo "::error::Tests attempted network access (blocked):"
+            sort "$NETWORK_GUARD_LOG" | uniq -c
+            exit 1
+          fi
+          echo "No network access attempted."

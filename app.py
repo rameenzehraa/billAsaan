@@ -8,8 +8,11 @@ import logging
 
 import streamlit as st
 
+import limits
 import viewer
+from config import load_limits
 from failures import ProcessingFailure, safe_failure
+from telemetry import stats
 
 log = logging.getLogger("app")
 if not log.handlers:  # Streamlit reruns the script; attach the console handler once
@@ -48,19 +51,51 @@ def _process(key: str):
         ss.busy = key
 
 
+CONSENT = ("This free demo uses Google's Gemini free tier; Google may use uploaded content to improve its products. "
+           "Cover your name, address and reference numbers before uploading.")
+PAID_NOTE = "Your bill is processed in memory and not stored."
+
+try:
+    LIMITS = load_limits()
+except ValueError as error:  # message names the setting only
+    st.error(f"Configuration error: {error}")
+    st.stop()
+ss.setdefault("bills_used", 0)  # successful new extractions this session (cached samples don't count)
+
+with st.sidebar, st.expander("System stats", expanded=False, icon=":material/monitoring:"):
+    snap = stats.snapshot()
+    st.caption("This server since its last restart. Counts and timings only; no bill content.")
+    st.markdown(f"Extractions **{snap['extractions']}** · Chat calls **{snap['chat_calls']}** · "
+                f"Cache hits **{snap['cache_hits']}** · Tokens **{snap['tokens']['total']:,}**")
+    for kind in ("extraction", "chat"):
+        lat = snap["latency_s"][kind]
+        st.caption(f"{kind.capitalize()} latency: p50 {lat['p50'] if lat['p50'] is not None else '–'} s · "
+                   f"p95 {lat['p95'] if lat['p95'] is not None else '–'} s ({lat['n']} calls)")
+    st.caption("Failures: " + (", ".join(f"{k} {v}" for k, v in sorted(snap["failures"].items())) or "none")
+               + f" · fallbacks {snap['fallbacks']} · limit blocks {snap['limit_blocks']}")
+    st.caption(f"Today: {limits.extractions.count}/{LIMITS.daily_extraction_cap} extractions, "
+               f"{limits.chats.count}/{LIMITS.daily_chat_cap} chat questions")
+
 st.title("BillAsaan", anchor=False)
 st.caption("Bijli ka bill, ab aasaan. Upload your electricity bill to see its key numbers.")
 
-# ---------- choose a bill ----------
+# ---------- privacy + choose a bill ----------
+if LIMITS.free_tier:
+    consent = st.checkbox(CONSENT, key="consent")
+else:
+    st.caption(PAID_NOTE)
+    consent = True
 samples = viewer.verified_samples()
 upload = st.file_uploader("Upload your bill", type=viewer.UPLOAD_TYPES, max_upload_size=8,
-                          on_change=_use_upload, key="upload",
+                          on_change=_use_upload, key="upload", disabled=not consent,
                           help="JPG, PNG, PDF (first page) or HEIC, up to 8 MB. Kept in memory for this session only.")
 if samples:
-    st.button("Try a sample bill", icon=":material/description:", on_click=_use_sample)
+    st.button("Try a sample bill", icon=":material/description:", on_click=_use_sample, disabled=not consent)
 
 data = mime = key = None
-if ss.use_sample and samples:
+if not consent:
+    pass  # nothing is read or sent until the notice is accepted
+elif ss.use_sample and samples:
     data, mime = samples[0]["data"], samples[0]["mime"]
 elif upload is not None:
     try:
@@ -70,16 +105,57 @@ elif upload is not None:
 if data is not None:
     key = viewer.image_key(data)
 
+is_sample = bool(ss.use_sample and samples and consent)
+needs_api = key is not None and key not in ss.results and not (is_sample and limits.cached_sample(key))
+block = None  # why Process is unavailable for this bill, if a limit applies
+if needs_api and limits.bills_left(ss, LIMITS.max_bills_per_session) == 0:
+    block = limits.BILLS_LIMIT.format(n=LIMITS.max_bills_per_session)
+elif needs_api and limits.extractions.remaining(LIMITS.daily_extraction_cap) == 0:
+    block = limits.DAILY_LIMIT
 st.button("Process", type="primary", icon=":material/bolt:", on_click=_process, args=(key,),
-          disabled=key is None or ss.busy is not None or key in ss.results)
+          disabled=key is None or ss.busy is not None or key in ss.results or block is not None)
+if block:
+    st.warning(block, icon=":material/block:")
 
-# ---------- one API call per new image ----------
+
+def _extract_once(image: bytes, image_mime: str):
+    """One extraction attempt on the current model; telemetry records it whatever the outcome."""
+    meta: dict = {}
+    try:
+        result = viewer.process_image(image, image_mime, meta_out=meta)
+    except ProcessingFailure as failure:
+        stats.record_call("extraction", meta, failure.diagnostic["category"])
+        raise
+    stats.record_call("extraction", meta)
+    return result
+
+
+# ---------- at most one API call (plus one quota fallback) per new image ----------
 if ss.busy is not None:
     busy_key = ss.busy
     try:
-        with st.spinner("Reading your bill…"):
-            log.info("process image=%s: calling extraction API", busy_key[:12])
-            ss.results[busy_key] = viewer.build_view(viewer.process_image(data, mime))
+        if is_sample and (cached := limits.cached_sample(busy_key)) is not None:
+            ss.results[busy_key] = cached  # reviewed sample already processed on this server: no API call
+            stats.bump("cache_hits")
+        elif limits.bills_left(ss, LIMITS.max_bills_per_session) == 0:
+            ss.errors[busy_key] = limits.BILLS_LIMIT.format(n=LIMITS.max_bills_per_session)
+            stats.bump("limit_blocks")
+        elif not limits.extractions.try_acquire(LIMITS.daily_extraction_cap):
+            ss.errors[busy_key] = limits.DAILY_LIMIT
+            stats.bump("limit_blocks")
+        else:
+            with st.spinner("Reading your bill…"):
+                log.info("process image=%s: calling extraction API", busy_key[:12])
+                outcome, fell_back, exhausted = limits.with_fallback(lambda: _extract_once(data, mime))
+            if fell_back:
+                stats.bump("fallbacks")
+            if exhausted:  # 429/quota on both models: never cached, never a raw error
+                ss.errors[busy_key] = limits.DAILY_LIMIT
+            else:
+                ss.results[busy_key] = viewer.build_view(outcome)
+                ss.bills_used += 1
+                if is_sample:
+                    limits.store_sample(busy_key, ss.results[busy_key])
     except Exception as error:  # noqa: BLE001 - only sanitized categories reach the UI or log
         failure = error if isinstance(error, ProcessingFailure) else ProcessingFailure(safe_failure(error, "processing"))
         ss.errors[busy_key] = str(failure)
@@ -132,8 +208,8 @@ with stats_col:
     history = viewer.history_rows(result)
     if history:
         st.subheader("Usage history", anchor=False)
-        st.bar_chart(history, x="Month", y="Units", y_label="Units (kWh)", sort=False,
-                     alt="Monthly units consumed, as printed on the bill")
+        st.bar_chart(history, x="Month", y="Units", x_label="Month", y_label="Units (kWh)",
+                     alt="Monthly units consumed, in date order")
 
     st.subheader("Checks", anchor=False)
     st.caption("A passing check finds no inconsistency; it doesn't prove every value is right.")
@@ -142,3 +218,81 @@ with stats_col:
         with st.container(border=True, horizontal=True, vertical_alignment="center"):
             st.badge(check["status"], color=color, icon=icon)
             st.markdown(f"**{CHECK_LABELS.get(check['name'], check['name'])}**")
+
+# ---------- chat with the bill (text only: no image is re-sent) ----------
+import chat  # noqa: E402 - only needed once a valid bill is shown
+
+ss.setdefault("chats", {})          # image sha256 -> [{"role", "content", "kind", "is_estimate", "method"}]
+ss.setdefault("chat_pending", None)  # (image sha256, question) while an answer is being generated
+
+
+def _ask(bill_key: str, question: str):
+    question = (question or "").strip()[:chat.MAX_QUESTION_CHARS]
+    over = limits.questions_left(ss.chats.get(bill_key, []), LIMITS.max_questions_per_bill) == 0
+    if question and ss.chat_pending is None and not over:
+        ss.chats.setdefault(bill_key, []).append({"role": "user", "content": question})
+        ss.chat_pending = (bill_key, question)
+
+
+def _submit(bill_key: str):
+    _ask(bill_key, ss.get("chat_q"))
+
+
+st.divider()
+st.subheader("Ask about your bill", anchor=False)
+messages = ss.chats.setdefault(key, [])
+answering = ss.chat_pending is not None
+chat_block = None
+if limits.questions_left(messages, LIMITS.max_questions_per_bill) == 0:
+    chat_block = limits.QUESTIONS_LIMIT.format(n=LIMITS.max_questions_per_bill)
+elif limits.chats.remaining(LIMITS.daily_chat_cap) == 0:
+    chat_block = limits.DAILY_LIMIT
+with st.container(horizontal=True):
+    for suggestion in chat.SUGGESTIONS:
+        st.button(suggestion, on_click=_ask, args=(key, suggestion), disabled=answering or chat_block is not None)
+
+for message in messages:
+    with st.chat_message(message["role"]):
+        if message["role"] == "user":
+            st.text(message["content"])
+        elif message.get("kind") == "failed":
+            st.error(message["content"], icon=":material/error:")
+        elif message.get("kind") in ("invalid", "limit"):
+            st.warning(message["content"], icon=":material/help:")
+        else:
+            st.markdown(message["content"])
+            if message.get("is_estimate"):
+                st.badge("Estimate", color="orange", icon=":material/info:")
+                if message.get("method"):
+                    st.caption(message["method"])
+
+if answering and ss.chat_pending[0] == key:
+    question = ss.chat_pending[1]
+
+    def _chat_once():
+        out = chat.ask(result, messages[:-1], question)
+        stats.record_call("chat", out.get("meta"), (out.get("meta", {}).get("failure") or {}).get("category")
+                          if out.get("kind") == "failed" else None)
+        return out
+
+    if not limits.chats.try_acquire(LIMITS.daily_chat_cap):
+        reply = {"kind": "limit", "content": limits.DAILY_LIMIT, "is_estimate": False, "method": ""}
+        stats.bump("limit_blocks")
+    else:
+        with st.chat_message("assistant"), st.spinner("Thinking…"):
+            reply, fell_back, exhausted = limits.with_fallback(_chat_once)
+        if fell_back:
+            stats.bump("fallbacks")
+        if exhausted:  # 429/quota on both models
+            reply = {"kind": "limit", "content": limits.DAILY_LIMIT, "is_estimate": False, "method": ""}
+    messages.append({k: reply[k] for k in ("kind", "content", "is_estimate", "method")} | {"role": "assistant"})
+    ss.chat_pending = None
+    st.rerun()
+elif answering:  # pending question belongs to a bill no longer shown
+    ss.chat_pending = None
+
+if chat_block and not answering:
+    st.info(chat_block, icon=":material/block:")
+st.chat_input("Ask anything about this bill", max_chars=chat.MAX_QUESTION_CHARS,
+              disabled=answering or chat_block is not None,
+              key="chat_q", on_submit=_submit, args=(key,))

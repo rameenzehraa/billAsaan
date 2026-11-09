@@ -25,6 +25,7 @@ user_uploads/
 .env*
 !.env.example
 .streamlit/secrets.toml
+!.streamlit/secrets.toml.example
 .aws/
 .ssh/
 *.pem
@@ -44,10 +45,8 @@ service-account*.json
 /data/mock_dev/*
 !/data/mock_dev/level1.csv
 !/data/mock_dev/level2.csv
+# Reviewed, anonymized public samples are the ONLY committable data: the folder and its manifest-listed files.
 !/data/public_samples/
-/data/public_samples/*
-!/data/public_samples/README.md
-!/data/public_samples/manifest.json
 
 # Unreviewed recordings, competition bundle and organizer document
 demo/
@@ -81,3 +80,7 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+
+# Private eval data: real bills and their hand-verified labels (results are committed, values never)
+eval/bills/
+eval/labels/

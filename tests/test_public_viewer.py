@@ -18,7 +18,8 @@ from viewer import (MAX_BYTES, NOT_A_BILL, NOT_SHOWN, build_view, is_bill, money
                     verified_samples)
 
 APP = str(Path(__file__).resolve().parents[1] / "app.py")
-OFFLINE_ENV = {"API_KEY": "offline-placeholder", "GEMINI_API_KEY": "", "GENAI_IPV4_ONLY": "0"}
+OFFLINE_ENV = {"API_KEY": "offline-placeholder", "GEMINI_API_KEY": "", "GENAI_IPV4_ONLY": "0",
+               "FREE_TIER": "false"}  # D3: consent gating has its own tests (test_limits.py)
 
 
 def image_bytes(color="white", fmt="PNG"):
@@ -113,6 +114,59 @@ class SchemaAndDisplayTests(unittest.TestCase):
         self.assertFalse(is_bill(ExtractionResult(level1=Level1Bill())))
 
 
+class D11RegressionTests(unittest.TestCase):
+    """D1.1: LESCO_0006 shapes (combined charges/taxes, interleaved history months)."""
+    LESCO_0006_MONTHS = ["2025-08", "2026-02", "2025-09", "2026-03", "2025-10", "2026-04",
+                         "2025-11", "2026-05", "2025-12", "2026-06", "2026-01", "2026-07"]
+
+    def lesco_like(self, charges):
+        return fixture(charges=charges, taxes=[], total_charges=3777.49, total_taxes=1723.51,
+                       current_bill=5501, arrears=39411, payable_within_due_date=44912,
+                       payable_after_due_date=45263)
+
+    def check(self, result, name="charges_taxes_vs_current_bill"):
+        from checks import run_checks
+        return next(c for c in run_checks(result.level1, result.internal) if c["name"] == name)
+
+    def test_empty_charges_is_insufficient_not_matched(self):
+        result = self.lesco_like([])  # subtotals alone add up exactly: 3777.49 + 1723.51 = 5501
+        before = result.model_dump()
+        self.assertEqual(self.check(result)["status"], "Insufficient Data")
+        self.assertEqual(result.model_dump(), before)  # checks never modify extracted values
+
+    def test_charge_lines_with_combined_tax_still_checked(self):
+        lines = [{"type": "energy", "amount": 3000}, {"type": "fpa", "amount": 777.49}]
+        self.assertEqual(self.check(self.lesco_like(lines))["status"], "Matched")
+        self.assertEqual(self.check(self.lesco_like(lines).model_copy(
+            update={"level1": self.lesco_like(lines).level1.model_copy(update={"current_bill": 9000})}))["status"],
+            "Mismatch")
+
+    def test_subtotals_shown_when_no_line_items(self):
+        from viewer import line_items
+        rows = line_items(self.lesco_like([]))
+        self.assertEqual([r["Amount"] for r in rows], ["Rs 3,777.49", "Rs 1,723.51"])
+        self.assertTrue(all("no breakdown" in r["Item"] for r in rows))
+
+    def test_history_chronological_and_data_untouched(self):
+        from viewer import history_rows
+        result = fixture()
+        result.internal.usage_history = [UsageMonth(month=m, units=i) for i, m in enumerate(self.LESCO_0006_MONTHS)]
+        rows = history_rows(result)
+        dates = [r["Month"] for r in rows]
+        self.assertEqual(dates, sorted(dates))
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(dates[0].strftime("%Y-%m"), "2025-08")
+        self.assertEqual(dates[-1].strftime("%Y-%m"), "2026-07")
+        self.assertEqual([m.month for m in result.internal.usage_history], self.LESCO_0006_MONTHS)
+
+    def test_history_printed_month_formats_and_unparseable(self):
+        from viewer import history_rows
+        result = fixture()
+        result.internal.usage_history = [UsageMonth(month="Mar-26", units=3), UsageMonth(month="Jan 2026", units=1),
+                                         UsageMonth(month="??", units=9), UsageMonth(month="2026-02", units=2)]
+        self.assertEqual([r["Units"] for r in history_rows(result)], [1, 2, 3])
+
+
 class AppTests(unittest.TestCase):
     def setUp(self):
         env = patch.dict(os.environ, OFFLINE_ENV)
@@ -143,7 +197,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual(metrics["Payable by due date"], "Rs 1,100")
             self.assertEqual(metrics["Bill month"], "Sep 2026")
             subheaders = [h.value for h in app.subheader]
-            self.assertEqual(subheaders, ["Charges and taxes", "Usage history", "Checks"])
+            self.assertEqual(subheaders, ["Charges and taxes", "Usage history", "Checks", "Ask about your bill"])
             checks = next(iter(app.session_state["results"].values()))["checks"]
             self.assertTrue(checks)
             self.assertTrue({c["status"] for c in checks} <= {"Matched", "Mismatch", "Insufficient Data"})
@@ -151,7 +205,7 @@ class AppTests(unittest.TestCase):
                 app.run()
             process.assert_called_once()
             self.assertFalse(app.text_area)
-            self.assertFalse(app.chat_input)
+            self.assertFalse(app.chat_input[0].disabled)  # D2: chat enabled once a bill is shown
 
     def test_nulls_render_as_not_shown(self):
         sparse = fixture(provider=None, due_date=None, payable_after_due_date=None, charges=[], taxes=[])

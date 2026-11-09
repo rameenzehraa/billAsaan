@@ -5,3 +5,6 @@ backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F4F5FA"
 textColor = "#1F2937"
 font = "sans serif"
+
+[server]
+maxUploadSize = 8  # MB; the app also enforces 8 MB per file

@@ -1,155 +1,126 @@
-# BillAsaan — Utility Bill Decoder
-*Bijli ka bill, ab aasaan.*
+# BillAsaan ⚡
 
-Women Tech Quest 2026, Build with AI track. BillAsaan reads Pakistani electricity bill images (IESCO, KE, LESCO), extracts structured billing details (Level 1), and answers customer questions about each bill in plain English (Level 2). Both output CSVs are generated entirely by code.
+**Bijli ka bill, ab aasaan.** Upload a Pakistani electricity bill and get its key numbers, consistency checks and a
+chat that answers questions about it in English, Urdu or Roman Urdu, with every number computed by code.
 
-## Public checkout and private data
+[![tests](https://github.com/rameenzehraa/billAsaan/actions/workflows/tests.yml/badge.svg)](https://github.com/rameenzehraa/billAsaan/actions/workflows/tests.yml)
+&nbsp;**Live demo:** <PASTE LIVE URL>
 
-The public repository contains code, empty-answer development CSV templates, an empty public-sample manifest, and synthetic offline UI tests. Original train/test bill images, bill-derived expected JSON, generated outputs, API caches/logs, user-upload folders, recordings, submission ZIPs and the organizer PDF stay local and are ignored. They have not been certified anonymous or cleared for redistribution.
+<!-- Demo GIF: record upload → Process → stats → a chat question, save as docs/demo.gif, then replace this line with:
+![BillAsaan demo](docs/demo.gif) -->
+> 🎬 *Demo GIF coming soon.*
 
-A fresh checkout can run the public UI and offline tests without competition data. For the competition CLI, supply your own bill images and matching CSV templates using the paths in the command below. `tests/check_extract.py` and `tests/smoke_scaffold.py` are legacy development helpers that require excluded local competition data; they are not the public offline test suite. `package.py` is the legacy competition packaging tool and requires local competition inputs/outputs; do not publish its generated ZIP as a public source release.
+Built in 3 hours at **Women Tech Quest 2026**, then productionized.
 
-Only `.env.example` is intended for publication; create `.env` locally. Public sample images remain excluded until anonymization review and an explicit Git ignore-rule update. Never use `git add -f` for private data.
+## What it does
 
-## Model declaration
-- **Model used in the application:** `gemini-3.5-flash-lite` (Google AI Studio), temperature 0.
-- **Fallback (configurable, same allowed list):** `gemini-3.1-flash-lite`.
-- No other model, OCR service, or invoice/receipt extraction service is used.
-
-## Setup
-Requires Python 3.11+. Developed and tested with **Python 3.13.9**.
-
-```bash
-python -m venv venv
-# Windows
-venv\Scripts\activate
-# macOS/Linux
-source venv/bin/activate
-
-pip install -r requirements.txt
-cp .env.example .env   # then put your key in .env
-```
-
-`.env` variables:
-
-| Variable | Example | Purpose |
-|---|---|---|
-| `MODEL_PROVIDER` | `google` | Provider. Must match the model (`google` for Gemini models), otherwise startup fails |
-| `MODEL_NAME` | `gemini-3.5-flash-lite` | Must be one of the allowed models, otherwise startup fails. Defaults to `gemini-3.5-flash-lite` |
-| `API_KEY` | `...` | Google AI Studio key. Never committed or logged |
-
-The older names `MODEL_ID` (for `MODEL_NAME`) and `GEMINI_API_KEY` (for `API_KEY`) are also accepted as fallbacks.
-
-## Network troubleshooting
-
-If diagnostics show a connection/TLS failure, first compare credential-free HTTPS access from Python and Windows curl to `https://generativelanguage.googleapis.com/v1beta/models`. An HTTP 403 without a key proves TLS/HTTP connectivity, not account access or extraction success. Never disable certificate verification.
-
-On networks where Python's default IPv6 TLS connections fail while forced IPv4 succeeds, set `GENAI_IPV4_ONLY=1` in local `.env` and fully restart Streamlit. This opt-in transport binds direct SDK connections to IPv4 while retaining certificate/hostname verification, timeouts and the configured provider/model. The default is `0`; revert it after the network's IPv6 path is repaired. No global network configuration is changed. The CLI uses the same transport setting; its arguments, cache and CSV behavior stay unchanged.
-
-## Run
-
-**Batch, which generates both CSVs:**
-```bash
-python run.py --bills <bills_dir> --templates <csv_dir> --out output/
-```
-- `<bills_dir>` holds the bill images (`.png`, `.jpg`, `.jpeg`); bill_id = file name without extension.
-- `<csv_dir>` contains the provided `level1.csv` and `level2.csv` templates.
-- Writes `output/level1.csv` and `output/level2.csv` in template order, then prints a per-bill summary (cache hit/miss, tokens, latency, checks) and an `UNVERIFIED ANSWERS` block.
-- `--refresh` ignores cached results and calls the model again (successful results are still cached).
-- Bad input (missing folder, no images, missing template, missing columns, empty template) prints `Error: <message>` and exits 1.
-
-**Public bill explainer:**
-```bash
-streamlit run app.py
-```
-- Choose **Upload my bill** (JPG/PNG, up to 10 MB and 20 million pixels) or **Try a sample**. Previewing and switching bills make no API calls.
-- Select **Process** to invoke the existing extraction service. Successful results disable duplicate processing. Failures allow retry and distinguish configuration/access, quota, connection/timeout, invalid extraction and local processing errors. A Processing diagnostics expander and server log contain only exception class names, category and HTTP status (when available), never exception messages or bill contents. No new API provider is used.
-- Review **Bill summary**, **Charges and taxes**, **Usage history**, and **Checks**. Under **Review extracted details**, edit the structured fields and select **Apply corrections**. Corrections are Pydantic-validated; local checks/calculations rerun, while the original extraction is preserved separately. Corrections never change competition CSVs.
-- Results and conversation state are session-only and clear when the selected bill changes. Uploads bypass the shared disk cache and extraction debug dumps. Images are re-encoded without metadata before preview and extraction.
-- Chat suggestions and submission are disabled with an integration-pending message. API chat integration remains future work; no replies are fabricated.
-- Samples require explicit anonymization review and a matching content hash in `data/public_samples/manifest.json` (see that folder's README). No original train/test bills are exposed. Without verified samples, the app shows an empty state.
-- The competition CLI and CSV workflow above remain available through `run.py`; batch controls are no longer exposed in the public interface. Existing competition configuration/model guards remain unchanged.
-
-**Offline UI verification (no server or API calls):**
-```bash
-python -m unittest discover -s tests -p test_public_viewer.py
-```
-Uses synthetic images and mocked extraction. Covers validation, sample gating, processing, duplicate prevention, corrections, resets, failures, and disabled chat.
-
-**Validate outputs:**
-```bash
-python tests/validate_outputs.py <csv_dir> output/
-```
-Checks row counts and order against the templates, one-line JSON that validates against the §5.1 schema with every key, identical bill_id/question_id/question, no empty cells and UTF-8, then reports per-bill check statuses and re-ask/unverified/failed counts.
-
-Other helpers: `python scripts/test_keys.py` (checks each Gemini key in `.env` against the allowed Gemini models; never prints keys). `data/mock_dev/` holds a small development template set for the train bills.
+1. **Upload** a bill photo, scan or PDF (JPG, PNG, PDF first page, HEIC; up to 8 MB). Any of the 11 DISCOs
+   (IESCO, LESCO, K-Electric, MEPCO, FESCO, GEPCO, PESCO, HESCO, SEPCO, QESCO, TESCO).
+2. **Process:** one vision call reads the bill into a Pydantic-validated structure.
+3. **See the stats:** amount due, due date, late amount, units, charges and taxes, usage history chart, and
+   consistency checks marked *Matched*, *Mismatch* or *Insufficient Data*.
+4. **Ask** "Why is my bill this amount?", "What if I pay late?", "Mera bill itna zyada kyun hai?"
 
 ## Architecture
 
-```
-bill image ─► images.py (EXIF fix, downscale only if long side > 2000px)
-          ─► extract.py  (1 vision call → JSON → Pydantic validation)
-          ─► checks.py   (local consistency checks; 1 re-ask on Mismatch or validation failure)
-          ─► cache.py    (exact-match cache, successes only)
-          ─► calc.py     (code computes all numbers + method strings)
-          ─► answer.py   (1 text call per bill: model picks expressions,
-                          code evaluates them and fills the answer text)
-          ─► run.py      (template-ordered level1.csv / level2.csv)
-app.py + viewer.py = session-only public UI over existing extraction, checks and calculations
+```mermaid
+flowchart LR
+    A["Upload<br/>JPG / PNG / PDF / HEIC<br/>in memory only"] --> B["Vision extraction<br/>Gemini, 1 call<br/>JSON validated by Pydantic"]
+    B --> C["Local checks<br/>checks.py<br/>flag, never correct"]
+    B --> D["Computed facts<br/>calc.py<br/>sums, averages, late surcharge"]
+    C --> E["Stats page<br/>Streamlit"]
+    D --> E
+    D --> F["Chat<br/>Gemini text call<br/>calculate tool, AST whitelist"]
+    F -->|"answer + method,<br/>numbers traced to data"| E
 ```
 
 | File | Role |
 |---|---|
-| `config.py` | Settings from `.env`, allowed-model guard, timeouts/retries, versions (extraction prompt `v3`, answer prompt `v7`, calc `c2`, schema `v1`) |
-| `schema.py` | Pydantic models: `Level1Bill` (exact §5.1 fields) and `InternalFacts` (history, rates, splits, late tiers, flags; never exported) |
-| `images.py` | Lists bills and loads/resizes images (bill_id = file stem; KESC files map to provider `KE` in `config.py`) |
-| `extract.py` | Vision extraction, value-preserving normalisation, retries, truncation handling, one re-ask |
-| `checks.py` | Date formats, readings vs units (±1 rounding tolerance for decimal readings), charges + taxes vs current bill, current + arrears vs payable, late ≥ within. Returns Matched / Mismatch / Insufficient Data. Never changes values |
-| `calc.py` | Named facts (history window with available-month count, averages and comparisons, seasons, 3-month trends, payment history, tax share, surcharge tiers, cost-per-unit estimates, net-metering evidence) plus a whitelisted `safe_eval` |
-| `answer.py` | Answer call, number-trace validation, re-ask, fallbacks |
-| `cache.py` | sha256-keyed atomic cache (`.cache/`) |
-| `run.py` | CLI, input validation and `run_pipeline()` |
-| `app.py`, `viewer.py` | Public bill explainer, private session state and validated uploads |
-| `tests/validate_outputs.py` | Output CSV validator |
+| `app.py` | Streamlit page: consent, upload, stats, chat, limits, System stats |
+| `extract.py` | One Gemini vision call per bill; strict Pydantic validation; one targeted re-ask |
+| `checks.py` | Arithmetic and format checks (compare only) |
+| `calc.py` | Deterministic facts used by chat (late surcharge, averages, trends, tax share) |
+| `chat.py` | Grounded Q&A with a `calculate` tool; output schema, number tracing, identifier guard |
+| `limits.py`, `telemetry.py` | Session/daily caps, quota fallback, in-memory stats |
+| `run.py` | Original competition CLI: batch extraction to CSV |
 
-### Reliability
-- Timeouts, and at most 2 retries with backoff on 429/5xx/timeout.
-- A failure on one bill never stops the run:
-  - If extraction fails, the Level 1 row is written fully keyed with nulls and empty lists, and that bill's answers say "Processing failed: this bill could not be read."
-  - If answering fails, the extraction is kept and the failed question says "Processing failed: an answer could not be generated for this question." (distinct from "The bill does not show ...").
-- Only successful, validated results are cached. Same inputs + settings + prompt/calc versions → byte-identical CSVs, with no API calls.
-- Bad input (missing folders, templates or columns) prints a one-line error and exits 1.
-- Every model call logs its tokens and latency.
+## Design decisions
 
-## AI use
-**In the application:**
-1. **Extraction (vision).** One call per bill reads the image (tilted scans, Urdu text, varied layouts) into the Pydantic schema. The prompt enforces the guide's rules:
-   - values copied as printed, with no rounding or correction
-   - credits negative
-   - null when not shown
-   - combined taxes go to `total_taxes` only
-   - personal identifiers excluded
+**Code does the math, not the model.** LLMs are unreliable at arithmetic, and a wrong rupee amount is worse than no
+answer. Chat gets pre-computed facts from `calc.py`; anything else must go through a `calculate(expression)` tool,
+evaluated with an AST whitelist (numbers, `+ - * / ( )`, `round/min/max/sum`; no `eval`). Every number in an answer
+must trace back to the bill data, a fact or a tool result, or the answer is rejected and re-asked once.
 
-   Code then checks consistency. If a check finds a Mismatch (or the output fails validation), it re-asks once about the flagged fields only. The re-asked result replaces the original only if it validates, has fewer mismatches, and doesn't drop any field the original had filled.
-2. **Answers (text).** Code computes every number. The model picks which computed facts and expressions answer each question and writes a sentence template. Code then evaluates the expressions and fills in the numbers and dates. An answer containing a number that doesn't trace back to a computed value triggers one re-ask; if it still can't be traced, it is kept and flagged as unverified. Answers:
-   - label estimates and explain the method
-   - say when a value isn't on the bill
-   - state the interpretation used for ambiguous questions, the history window and how many months were used
+**Checks flag issues; they never correct values.** If charges + taxes don't add up to the current bill, the user sees
+*Mismatch* and the extracted numbers stay exactly as printed. Missing components give *Insufficient Data*, never a
+false *Matched*. A passing check means "no inconsistency found", not "proven correct".
 
-**Why this design:** the model handles what code can't, which is reading messy images and understanding the questions. Code handles what the model is bad at: arithmetic and repeatability.
+**Built for free-tier limits.** Per-session limits (3 bills, 15 questions per bill) and whole-app daily caps (150
+extractions, 400 questions) protect the quota. A daily-quota 429 skips same-model retries and falls back once from
+`gemini-3.5-flash-lite` to `gemini-3.1-flash-lite`; per-minute 429s get one short retry. When both models are
+exhausted users see "Daily demo limit reached, try tomorrow", never a raw error. Results are cached per session by
+image hash, so reruns cost nothing.
 
-**Limitations:**
-- A heavily folded or handwritten-over photo can still be misread.
-- A charge printed outside the main box can occasionally be missed. The payable check flags this.
-- Net metering can't be confirmed from the extracted fields, so answers about it are hedged.
+**Privacy first.** Bills are processed in memory and never written to disk or a shared cache. Images are re-encoded to
+strip metadata. On the free tier a consent box explains that Google may use uploaded content and asks users to cover
+their name, address and reference numbers. Logs and stats hold counts, timings and error categories only, never bill
+content or questions. Chat refuses to repeat personal identifiers.
 
-**AI coding tools used during development:** Claude Code (coding agent); Claude and ChatGPT (chat, for planning and review).
+## Eval
 
-## Rules followed
-- Only allowed models, and no banned extraction services.
-- No test-bill values in code or data files.
-- CSVs are written by code with the `csv` module, in UTF-8, keeping template order and columns. They are never edited by hand.
-- `.env`, keys and `.cache/` are excluded from the submission.
+Extraction accuracy (per field, with *invented* vs *missed* counted separately), charge and tax line matching, and
+chat number accuracy against `calc.py` are measured by [`eval/run_eval.py`](eval/README.md). Current results:
+**[eval/RESULTS.md](eval/RESULTS.md)**. The sample is still small (n=1 hand-verified bill, which was also used during
+prompt development); more verified labels are being added, so treat the numbers as indicative.
 
-## Submission layout
-`python package.py` builds `submission.zip`: `output/` (both CSVs), `source/` (code, tests, `requirements.txt`, this README, `.env.example`, `data/mock_dev/`) and, optionally, `demo/` if a `demo.mp4|mov|webm` exists.
+## Run locally
+
+```bash
+python -m venv venv
+venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
+pip install -r requirements.txt
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # or copy .env.example to .env
+# put your Gemini API key in API_KEY
+streamlit run app.py
+```
+
+Settings are read from Streamlit secrets first, then environment variables / `.env`: `API_KEY`, `MODEL_NAME`,
+`FREE_TIER`, `MAX_BILLS_PER_SESSION`, `MAX_QUESTIONS_PER_BILL`, `DAILY_EXTRACTION_CAP`, `DAILY_CHAT_CAP`.
+Deploying: see [DEPLOY.md](DEPLOY.md).
+
+### Tests
+
+```bash
+python -m unittest tests.test_deploy tests.test_limits tests.test_chat tests.test_public_viewer tests.test_transport
+```
+
+85 tests, all offline: every model call is mocked. CI runs the same suite on every push and pull request with network
+access blocked, so a test that tries to reach the internet fails the build.
+
+### CLI batch mode (competition workflow)
+
+```bash
+python run.py --bills <bills_dir> --templates <csv_dir> --out output/
+```
+
+Reads every bill image in `<bills_dir>`, fills the `level1.csv` / `level2.csv` templates in `<csv_dir>` and writes
+them to `output/`, with a per-bill summary (cache hit/miss, tokens, latency, checks). Successful extractions are cached
+on disk; `--refresh` forces new calls.
+
+## AI use and model declaration
+
+- **Models:** Google `gemini-3.5-flash-lite` for extraction and chat; `gemini-3.1-flash-lite` as the quota fallback.
+  Called through the `google-genai` SDK (`generate_content`), temperature 0, structured JSON output.
+- **What the model does:** reads the bill image into fields; phrases chat answers and decides when to call the
+  calculator. **What it doesn't do:** arithmetic, correcting values, or seeing anything except the bill data in chat.
+- **Development:** built with AI coding assistants during and after the hackathon; design, review and verification of
+  every change by the author.
+
+## Limitations
+
+- Extraction can still misread blurry or folded bills; the checks catch arithmetic inconsistencies, not every misread.
+- Some bills print only combined charge or tax amounts, so line items show as subtotals (by design).
+- Daily caps, the sample cache and stats live in memory and reset when the app restarts or sleeps.
+- On the free tier Google may use uploaded content to improve its products; the consent box says so.
+- The eval set is small; accuracy figures are indicative until more hand-verified bills are labelled.
+- Not affiliated with any DISCO; always check the printed bill before paying.

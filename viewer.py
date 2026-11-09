@@ -121,15 +121,40 @@ def line_items(result: ExtractionResult) -> list[dict]:
     b = result.level1
     rows = [{"Type": "Charge", "Item": label(c.type), "Amount": money(c.amount)} for c in b.charges]
     rows += [{"Type": "Tax", "Item": label(t.type), "Amount": money(t.amount)} for t in b.taxes]
+    # No itemized lines but a printed subtotal: show the subtotal rather than claim nothing is shown.
+    if not b.charges and b.total_charges is not None:
+        rows.insert(0, {"Type": "Charge", "Item": "Total charges (no breakdown)", "Amount": money(b.total_charges)})
+    if not b.taxes and b.total_taxes is not None:
+        rows.append({"Type": "Tax", "Item": "Total taxes (no breakdown)", "Amount": money(b.total_taxes)})
     return rows
 
 
+MONTH_FORMATS = ("%Y-%m", "%b-%y", "%b %y", "%b-%Y", "%b %Y", "%B %Y", "%B-%Y", "%m/%Y", "%Y/%m")
+
+
+def parse_month(value: str | None) -> datetime | None:
+    """Month as extracted (YYYY-MM or as printed) -> first day of that month, or None if unparseable."""
+    if not value:
+        return None
+    text = value.strip()
+    for fmt in MONTH_FORMATS:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def history_rows(result: ExtractionResult) -> list[dict]:
-    return [{"Month": show(m.month), "Units": m.units}
-            for m in result.internal.usage_history if m.units is not None]
+    """Chronological rows for the chart. Display only: extracted data is not modified.
+    Months that can't be dated are left out of the chart (their order would be a guess)."""
+    rows = [{"Month": d, "Units": m.units} for m in result.internal.usage_history
+            if m.units is not None and (d := parse_month(m.month)) is not None]
+    return sorted(rows, key=lambda r: r["Month"])
 
 
-def process_image(data: bytes, mime: str) -> ExtractionResult:
+def process_image(data: bytes, mime: str, meta_out: dict | None = None) -> ExtractionResult:
+    """meta_out (optional): filled with latency_s/input_tokens/output_tokens/attempts for telemetry."""
     # Import lazily: selection and preview never initialize a provider.
     from extract import extract_bill
     from config import load_settings
@@ -143,6 +168,8 @@ def process_image(data: bytes, mime: str) -> ExtractionResult:
         result, meta = extract_bill("upload", None, "unused", image=(data, mime, None, None), private=True)
     except Exception as error:
         raise ProcessingFailure(safe_failure(error, "api")) from None
+    if meta_out is not None:
+        meta_out.update({k: meta.get(k) for k in ("latency_s", "input_tokens", "output_tokens", "attempts")})
     if meta["error"]:
         diagnostic = meta.get("failure") or safe_failure(RuntimeError(), "processing")
         raise ProcessingFailure(diagnostic) from None
